@@ -13,7 +13,7 @@
  *   node scripts/push-zcode-plus.mjs
  *   node scripts/push-zcode-plus.mjs --public
  *
- * 默认私有仓库。仓库名固定为 zcode+。已存在则只推送 main，不强制覆盖历史。
+ * 默认私有仓库，仓库名是 zcodes。已存在则只推送 main，不强制覆盖历史。
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,7 +21,7 @@ import os from "node:os";
 import path from "node:path";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const repoName = "zcode+";
+const repoName = "zcodes";
 const isPublic = process.argv.includes("--public");
 
 const includeDirs = [
@@ -253,6 +253,23 @@ function assertNoSecrets(staging) {
   }
 }
 
+function repoCandidates() {
+  const sanitized = repoName.replaceAll("+", "-");
+  return sanitized === repoName ? [repoName] : [repoName, sanitized];
+}
+
+function findRepo(owner) {
+  for (const name of repoCandidates()) {
+    const view = run("gh", ["repo", "view", `${owner}/${name}`, "--json", "name,url"], {
+      allowFail: true,
+    });
+    if (view.status === 0) {
+      return JSON.parse(view.stdout);
+    }
+  }
+  return null;
+}
+
 function publish(staging, owner) {
   run("git", ["init", "-b", "main"], { cwd: staging });
   run("git", ["add", "-A"], { cwd: staging });
@@ -265,35 +282,37 @@ function publish(staging, owner) {
     [
       "commit",
       "-m",
-      "Publish ZCode+ desktop client and mobile client source.\n\nExclude the agent CLI, build outputs, and local caches.",
+      "Publish zcodes desktop client and mobile client source.\n\nExclude the agent CLI, build outputs, and local caches.",
     ],
     { cwd: staging },
   );
 
-  const fullName = `${owner}/${repoName}`;
-  const view = run("gh", ["repo", "view", fullName, "--json", "url"], { allowFail: true });
-  if (view.status !== 0) {
+  let repo = findRepo(owner);
+  if (!repo) {
     run("gh", [
       "repo",
       "create",
-      fullName,
+      `${owner}/${repoName}`,
       isPublic ? "--public" : "--private",
       "--description",
-      "ZCode+ desktop client and mobile client source",
+      "zcodes desktop client and mobile client source",
       "--source",
       staging,
       "--remote",
       "origin",
       "--push",
     ]);
-    return;
+    repo = findRepo(owner);
+    if (!repo?.url) {
+      throw new Error(`仓库已创建，但没能解析 ${repoName} 的实际地址`);
+    }
+    return repo.url;
   }
 
   run("git", ["remote", "remove", "origin"], { cwd: staging, allowFail: true });
-  run("git", ["remote", "add", "origin", `https://github.com/${owner}/${encodeURIComponent(repoName)}.git`], {
-    cwd: staging,
-  });
+  run("git", ["remote", "add", "origin", repo.url.replace(/\/$/, "") + ".git"], { cwd: staging });
   run("git", ["push", "-u", "origin", "main"], { cwd: staging });
+  return repo.url;
 }
 
 const owner = githubLogin();
@@ -302,11 +321,8 @@ try {
   copyTree(staging);
   assertNoArtifacts(staging);
   assertNoSecrets(staging);
-  publish(staging, owner);
-  const url = run("gh", ["repo", "view", `${owner}/${repoName}`, "--json", "url", "--jq", ".url"], {
-    cwd: staging,
-  });
-  process.stdout.write(`${url.stdout.trim()}\n`);
+  const url = publish(staging, owner);
+  process.stdout.write(`${url}\n`);
 } finally {
   fs.rmSync(staging, { recursive: true, force: true });
 }
