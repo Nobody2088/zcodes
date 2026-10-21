@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- 技能分组契约、校验与投影集中一处，便于与 skill-groups-and-install spec 对照。 */
 import type { SkillScope } from "./skills-types.js";
 
 export type SkillGroupScope = "user" | "workspace";
@@ -91,6 +92,24 @@ export interface GitHubRepositoryRef {
 export interface SkillGitHubInstallResult {
   repo: string;
   commit: string;
+  installed: string[];
+  skipped: Array<{ name: string; reason: string }>;
+  groupId: string;
+}
+
+/** 一次本地目录扫描里识别出的技能。directory 是技能目录的真实路径。 */
+export interface LocalSkillCandidate {
+  directory: string;
+  name: string;
+  description: string;
+}
+
+export interface LocalSkillPreview {
+  rootPath: string;
+  skills: LocalSkillCandidate[];
+}
+
+export interface LocalSkillInstallResult {
   installed: string[];
   skipped: Array<{ name: string; reason: string }>;
   groupId: string;

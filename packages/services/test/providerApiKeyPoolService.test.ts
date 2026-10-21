@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { apiKeyPoolKeyId } from "@zcode/shared/node";
 import type { ICredentialService } from "../src/credential/credential.js";
 import type {
   IProviderSettingsService,
   ProviderSettingsView,
 } from "../src/model-provider/providerFacadeServices.js";
 import { createProviderApiKeyPoolService } from "../src/model-provider/providerApiKeyPoolService.js";
-import type { OpenCodeKeyProbeAttempt } from "../src/model-provider/providerApiKeyPool.js";
+import {
+  readPooledRequestFailureFromTurnError,
+  type OpenCodeKeyProbeAttempt,
+} from "../src/model-provider/providerApiKeyPool.js";
 
 const PROVIDER_ID = "personal-opencode-go";
 
@@ -147,22 +151,31 @@ test("probe failure does not roll back a successful batch add", async () => {
   assert.equal(view.keys.length, 1);
 });
 
-test("expired keys move to the expired group after probe", async () => {
+test("expired keys move to the expired group when another key remains", async () => {
   const { settings } = createSettings();
   const service = createProviderApiKeyPoolService({
     credentialService: createMemoryCredentials(),
     providerSettings: settings,
-    probe: async () => [
-      {
-        kind: "http",
-        urlKind: "usage",
-        status: 401,
-        json: { error: { message: "API key expired" } },
-      },
-    ],
+    probe: async ({ secret }) => {
+      if (secret.includes("expired")) {
+        return [
+          {
+            kind: "http",
+            urlKind: "usage",
+            status: 401,
+            json: { error: { message: "API key expired" } },
+          },
+        ];
+      }
+      return [poolUsage(10)];
+    },
   });
-  const result = await service.addKeys(PROVIDER_ID, "sk-test-pool-expired");
-  assert.equal(result.view.keys[0]?.group, "expired");
+  const result = await service.addKeys(PROVIDER_ID, "sk-test-pool-expired\nsk-test-pool-live");
+  const expired = result.view.keys.find((item) => item.maskedKey.endsWith("ired"));
+  const live = result.view.keys.find((item) => item.maskedKey.endsWith("live"));
+  assert.equal(expired?.group, "expired");
+  assert.equal(live?.group, "pool");
+  assert.equal(result.view.activeKeyId, live?.keyId);
 });
 
 test("cooling keys re-enter the pool after Host re-probe when availableAt is due", async () => {
@@ -173,15 +186,20 @@ test("cooling keys re-enter the pool after Host re-probe when availableAt is due
     credentialService: createMemoryCredentials(),
     providerSettings: settings,
     now: () => now,
-    probe: async () => [poolUsage(remaining, remaining >= 100 ? "rate-limited" : "ok")],
+    probe: async ({ secret }) => {
+      if (!secret.includes("cool")) return [poolUsage(10)];
+      return [poolUsage(remaining, remaining >= 100 ? "rate-limited" : "ok")];
+    },
   });
-  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-cool");
-  assert.equal(added.view.keys[0]?.group, "cooling");
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-cool\nsk-test-pool-live");
+  const cool = added.view.keys.find((item) => item.maskedKey.endsWith("cool"));
+  assert.equal(cool?.group, "cooling");
   remaining = 8;
-  now = (added.view.keys[0]?.availableAt ?? 0) + 1;
+  now = (cool?.availableAt ?? 0) + 1;
   const refreshed = await service.getView(PROVIDER_ID);
-  assert.equal(refreshed.keys[0]?.group, "pool");
-  assert.equal(refreshed.keys[0]?.availableAt, null);
+  const cooled = refreshed.keys.find((item) => item.keyId === cool?.keyId);
+  assert.equal(cooled?.group, "pool");
+  assert.equal(cooled?.availableAt, null);
 });
 
 function lastOverlayApiKey(writes: unknown[]): string | null {
@@ -296,7 +314,7 @@ test("selectActiveKey switches overlay to the requested pool key and rejects coo
   assert.equal(alpha?.group, "pool");
 });
 
-test("cooling-only pool clears the runtime overlay instead of projecting a spent key", async () => {
+test("a sole rate-limited key stays in the default pool group and keeps the overlay", async () => {
   const { settings, overlayWrites } = createSettings();
   const service = createProviderApiKeyPoolService({
     credentialService: createMemoryCredentials(),
@@ -304,8 +322,11 @@ test("cooling-only pool clears the runtime overlay instead of projecting a spent
     probe: async () => [poolUsage(100, "rate-limited")],
   });
   const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-spent");
-  assert.equal(added.view.activeKeyId, null);
-  assert.equal(lastOverlayApiKey(overlayWrites), null);
+  assert.equal(added.view.keys.length, 1);
+  assert.equal(added.view.keys[0]?.group, "pool");
+  assert.equal(added.view.keys[0]?.remainingPercent, 0);
+  assert.equal(added.view.activeKeyId, added.view.keys[0]?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-spent");
 });
 
 test("noteRequestFailure 403 switches overlay to another pool key without invalidating the current key", async () => {
@@ -355,6 +376,132 @@ test("noteRequestFailure 401 invalidates the current key and switches overlay to
   assert.equal(after.keys.find((item) => item.keyId === alpha?.keyId)?.group, "invalid");
   assert.equal(after.activeKeyId, beta?.keyId);
   assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-beta");
+});
+
+test("claimNextKeyAfterFailure 401 switches the failed key and returns the next secret", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async ({ secret }) => [poolUsage(secret.includes("alpha") ? 20 : 10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-alpha\nsk-test-pool-beta");
+  const alpha = added.view.keys.find((item) => item.remainingPercent === 80);
+  const beta = added.view.keys.find((item) => item.remainingPercent === 90);
+  assert.equal(alpha?.keyId, "5d05732cda27a081");
+  await service.selectActiveKey(PROVIDER_ID, alpha!.keyId);
+  const active = await service.readActiveKey(PROVIDER_ID);
+  assert.equal(active?.apiKey, "sk-test-pool-alpha");
+  const claimed = await service.claimNextKeyAfterFailure(PROVIDER_ID, alpha!.keyId, 401);
+  assert.equal(claimed.rotated, true);
+  assert.equal(claimed.apiKey, "sk-test-pool-beta");
+  assert.equal(claimed.keyId, beta?.keyId);
+  const view = await service.getView(PROVIDER_ID);
+  assert.equal(view.keys.find((item) => item.keyId === alpha?.keyId)?.group, "invalid");
+  assert.equal(view.activeKeyId, beta?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-beta");
+  assert.equal(JSON.stringify(view).includes("sk-test-pool-beta"), false);
+});
+
+test("claimNextKeyAfterFailure does not invalidate a different current key", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async ({ secret }) => [poolUsage(secret.includes("alpha") ? 20 : 10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-alpha\nsk-test-pool-beta");
+  const alpha = added.view.keys.find((item) => item.remainingPercent === 80);
+  const beta = added.view.keys.find((item) => item.remainingPercent === 90);
+  await service.selectActiveKey(PROVIDER_ID, beta!.keyId);
+  const claimed = await service.claimNextKeyAfterFailure(PROVIDER_ID, alpha!.keyId, 401);
+  assert.equal(claimed.rotated, true);
+  assert.equal(claimed.keyId, beta?.keyId);
+  const view = await service.getView(PROVIDER_ID);
+  assert.equal(view.keys.find((item) => item.keyId === alpha?.keyId)?.group, "invalid");
+  assert.equal(view.keys.find((item) => item.keyId === beta?.keyId)?.group, "pool");
+  assert.equal(view.activeKeyId, beta?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-beta");
+});
+
+test("turn failure records the key id that was used", () => {
+  const failure = readPooledRequestFailureFromTurnError({
+    context: { pooledApiKeyId: "5d05732cda27a081", providerId: PROVIDER_ID, statusCode: 401 },
+  });
+  assert.equal(failure?.providerId, PROVIDER_ID);
+  assert.equal(failure?.status, 401);
+  assert.equal(failure?.failedKeyId, "5d05732cda27a081");
+});
+
+test("noteRequestFailure classifies the failed key instead of the current overlay", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async ({ secret }) => [poolUsage(secret.includes("alpha") ? 20 : 10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-alpha\nsk-test-pool-beta");
+  const alpha = added.view.keys.find((item) => item.remainingPercent === 80);
+  const beta = added.view.keys.find((item) => item.remainingPercent === 90);
+  await service.selectActiveKey(PROVIDER_ID, beta!.keyId);
+  const after = await service.noteRequestFailure(PROVIDER_ID, 401, alpha!.keyId);
+  assert.equal(after.keys.find((item) => item.keyId === alpha?.keyId)?.group, "invalid");
+  assert.equal(after.keys.find((item) => item.keyId === beta?.keyId)?.group, "pool");
+  assert.equal(after.activeKeyId, beta?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-beta");
+});
+
+test("claimNextKeyAfterFailure 402 marks the key exhausted and switches overlay", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async ({ secret }) => [poolUsage(secret.includes("alpha") ? 20 : 10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-alpha\nsk-test-pool-beta");
+  const alpha = added.view.keys.find((item) => item.remainingPercent === 80);
+  const beta = added.view.keys.find((item) => item.remainingPercent === 90);
+  await service.selectActiveKey(PROVIDER_ID, alpha!.keyId);
+  const claimed = await service.claimNextKeyAfterFailure(PROVIDER_ID, alpha!.keyId, 402);
+  assert.equal(claimed.rotated, true);
+  assert.equal(claimed.keyId, beta?.keyId);
+  const view = await service.getView(PROVIDER_ID);
+  assert.equal(view.keys.find((item) => item.keyId === alpha?.keyId)?.group, "exhausted");
+  assert.equal(view.keys.find((item) => item.keyId === beta?.keyId)?.group, "pool");
+  assert.equal(view.activeKeyId, beta?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-beta");
+});
+
+test("turn failure with insufficient balance is status 402", () => {
+  const failure = readPooledRequestFailureFromTurnError({
+    message: "credit insufficient balance: balance=24368 required=74552",
+    context: {
+      pooledApiKeyId: "5d05732cda27a081",
+      providerCode: "insufficient_user_quota",
+      providerId: PROVIDER_ID,
+      statusCode: 400,
+    },
+  });
+  assert.equal(failure?.status, 402);
+  assert.equal(failure?.failedKeyId, "5d05732cda27a081");
+});
+
+test("claimNextKeyAfterFailure keeps the only pool key", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async () => [poolUsage(10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-only");
+  const only = added.view.keys[0]!;
+  const claimed = await service.claimNextKeyAfterFailure(PROVIDER_ID, only.keyId, 403);
+  assert.equal(claimed.rotated, false);
+  assert.equal(claimed.apiKey, undefined);
+  const view = await service.getView(PROVIDER_ID);
+  assert.equal(view.activeKeyId, only.keyId);
+  assert.equal(view.keys[0]?.group, "pool");
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-only");
 });
 
 test("noteRequestFailure 500 does not rotate the current pool key", async () => {
@@ -891,6 +1038,55 @@ function balanceBody(credits: number): OpenCodeKeyProbeAttempt {
   };
 }
 
+test("a sole key stays in the default pool group for quota, auth, and rate-limit errors", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async () => [poolUsage(10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-only");
+  const onlyId = added.view.keys[0]?.keyId;
+  assert.equal(added.view.activeKeyId, onlyId);
+
+  const unauthorized = await service.noteRequestFailure(PROVIDER_ID, 401);
+  assert.equal(unauthorized.keys[0]?.group, "pool");
+  assert.equal(unauthorized.activeKeyId, onlyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-only");
+
+  const limited = await service.noteRequestFailure(PROVIDER_ID, 429);
+  assert.equal(limited.keys[0]?.group, "pool");
+  assert.equal(limited.keys[0]?.availableAt, null);
+  assert.equal(limited.activeKeyId, onlyId);
+
+  const claimed = await service.claimNextKeyAfterFailure(PROVIDER_ID, onlyId, 402);
+  assert.equal(claimed.rotated, false);
+  const view = await service.getView(PROVIDER_ID);
+  assert.equal(view.keys[0]?.group, "pool");
+  assert.equal(view.activeKeyId, onlyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-only");
+});
+
+test("deleting down to one key returns that key to the default pool group", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async ({ secret }) => [poolUsage(secret.includes("alpha") ? 20 : 10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-alpha\nsk-test-pool-beta");
+  const alpha = added.view.keys.find((item) => item.remainingPercent === 80);
+  const beta = added.view.keys.find((item) => item.remainingPercent === 90);
+  await service.selectActiveKey(PROVIDER_ID, alpha!.keyId);
+  const failed = await service.noteRequestFailure(PROVIDER_ID, 402);
+  assert.equal(failed.keys.find((item) => item.keyId === alpha?.keyId)?.group, "exhausted");
+  const remaining = await service.deleteKeys(PROVIDER_ID, [beta!.keyId]);
+  assert.equal(remaining.keys.length, 1);
+  assert.equal(remaining.keys[0]?.group, "pool");
+  assert.equal(remaining.activeKeyId, alpha?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-alpha");
+});
+
 test("api.b.ai addKeys queries balance and groups a zero-credit key as exhausted", async () => {
   const providerId = "personal-bai";
   const { settings, overlayWrites } = createGenericSettings({
@@ -921,6 +1117,26 @@ test("api.b.ai addKeys queries balance and groups a zero-credit key as exhausted
   assert.equal(live?.balance?.credits, 80);
   assert.equal(added.view.activeKeyId, live?.keyId);
   assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-bai-live");
+});
+
+test("a sole zero-credit balance key stays in the default pool group", async () => {
+  const providerId = "personal-bai-only";
+  const { settings, overlayWrites } = createGenericSettings({
+    providerId,
+    templateId: null,
+    baseUrl: "https://api.b.ai/v1",
+  });
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async () => [balanceBody(0)],
+  });
+  const added = await service.addKeys(providerId, "sk-test-bai-spent");
+  assert.equal(added.view.keys.length, 1);
+  assert.equal(added.view.keys[0]?.group, "pool");
+  assert.equal(added.view.keys[0]?.balance?.credits, 0);
+  assert.equal(added.view.activeKeyId, added.view.keys[0]?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-bai-spent");
 });
 
 test("balance 403 re-probe moves a spent key out and switches to a funded key", async () => {
@@ -970,4 +1186,114 @@ test("balance 403 with remaining credits keeps the key in the pool", async () =>
   assert.equal(after.keys[0]?.group, "pool");
   assert.equal(after.keys[0]?.balance?.credits, 15);
   assert.equal(after.activeKeyId, added.view.keys[0]?.keyId);
+});
+
+function storedUnknownKey(secret: string) {
+  return {
+    keyId: apiKeyPoolKeyId(secret),
+    secret,
+    addedAt: 1,
+    lastCheckedAt: null,
+    group: "unknown" as const,
+    remainingPercent: null,
+    resetAt: null,
+    availableAt: null,
+    probeError: null,
+    label: null,
+  };
+}
+
+test("none-quota claim switches an imported overlay key without opening the pool view", async () => {
+  const providerId = "new-provider-2";
+  const alpha = "sk-test-overlay-alpha";
+  const beta = "sk-test-stored-beta1";
+  const credentials = createMemoryCredentials();
+  await credentials.save(
+    `provider-api-key-pool:${providerId}`,
+    JSON.stringify({
+      version: 1,
+      activeKeyId: null,
+      keys: [storedUnknownKey(beta)],
+    }),
+  );
+  const { settings, overlayWrites } = createGenericSettings({
+    providerId,
+    templateId: null,
+    baseUrl: "https://example.com/v1",
+    apiKey: alpha,
+  });
+  let probeCalls = 0;
+  const service = createProviderApiKeyPoolService({
+    credentialService: credentials,
+    providerSettings: settings,
+    probe: async () => {
+      probeCalls += 1;
+      return [modelsOk()];
+    },
+  });
+  const claimed = await service.claimNextKeyAfterFailure(providerId, apiKeyPoolKeyId(alpha), 402);
+  assert.equal(probeCalls, 0);
+  assert.equal(claimed.rotated, true);
+  assert.equal(claimed.keyId, apiKeyPoolKeyId(beta));
+  assert.equal(lastOverlayApiKey(overlayWrites), beta);
+  const view = await service.getView(providerId);
+  assert.equal(view.keys.find((item) => item.keyId === apiKeyPoolKeyId(alpha))?.group, "exhausted");
+  assert.equal(view.keys.find((item) => item.keyId === apiKeyPoolKeyId(beta))?.group, "pool");
+  assert.equal(view.activeKeyId, apiKeyPoolKeyId(beta));
+  assert.equal(probeCalls, 0);
+});
+
+test("channel claim switches an unknown key without probing models", async () => {
+  const providerId = "channel-unknown-quota";
+  const alpha = "sk-test-channel-alpha";
+  const beta = "sk-test-channel-beta1";
+  const credentials = createMemoryCredentials();
+  await credentials.save(
+    `provider-api-key-pool:${providerId}`,
+    JSON.stringify({
+      version: 1,
+      activeKeyId: apiKeyPoolKeyId(alpha),
+      keys: [storedUnknownKey(alpha), storedUnknownKey(beta)],
+    }),
+  );
+  const { settings, overlayWrites } = createGenericSettings({
+    providerId,
+    templateId: "openai",
+    baseUrl: "https://api.example.com/v1",
+    apiKey: alpha,
+  });
+  let probeCalls = 0;
+  const service = createProviderApiKeyPoolService({
+    credentialService: credentials,
+    providerSettings: settings,
+    probe: async () => {
+      probeCalls += 1;
+      return [modelsOk()];
+    },
+  });
+  const claimed = await service.claimNextKeyAfterFailure(providerId, apiKeyPoolKeyId(alpha), 402);
+  assert.equal(probeCalls, 0);
+  assert.equal(claimed.rotated, true);
+  assert.equal(claimed.keyId, apiKeyPoolKeyId(beta));
+  assert.equal(lastOverlayApiKey(overlayWrites), beta);
+});
+
+test("claimNextKeyAfterFailure without failedKeyId classifies the current key", async () => {
+  const { settings, overlayWrites } = createSettings();
+  const service = createProviderApiKeyPoolService({
+    credentialService: createMemoryCredentials(),
+    providerSettings: settings,
+    probe: async ({ secret }) => [poolUsage(secret.includes("alpha") ? 20 : 10)],
+  });
+  const added = await service.addKeys(PROVIDER_ID, "sk-test-pool-alpha\nsk-test-pool-beta");
+  const alpha = added.view.keys.find((item) => item.remainingPercent === 80);
+  const beta = added.view.keys.find((item) => item.remainingPercent === 90);
+  await service.selectActiveKey(PROVIDER_ID, alpha!.keyId);
+  const claimed = await service.claimNextKeyAfterFailure(PROVIDER_ID, undefined, 402);
+  assert.equal(claimed.rotated, true);
+  assert.equal(claimed.keyId, beta?.keyId);
+  const view = await service.getView(PROVIDER_ID);
+  assert.equal(view.keys.find((item) => item.keyId === alpha?.keyId)?.group, "exhausted");
+  assert.equal(view.activeKeyId, beta?.keyId);
+  assert.equal(lastOverlayApiKey(overlayWrites), "sk-test-pool-beta");
 });

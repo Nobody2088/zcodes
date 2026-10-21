@@ -27,6 +27,7 @@ import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { MentionPanel, type MentionPanelSection } from "@/mentions/components/MentionPanel.js";
 import { PluginMentionOptionContent } from "@/mentions/components/PluginMentionOptionContent.js";
 import { usePluginsMentionProvider } from "@/mentions/providers/pluginsMentionProvider.js";
+import { NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME } from "@/lib/narrowShellPresentation.js";
 
 /**
  * 「添加」分区里紧随附件之后的命令快捷项，选中即插入与 `/` 面板相同的命令标签。
@@ -274,7 +275,7 @@ export function ChatPromptActionMenu({
             type="button"
             variant="ghost"
             size="icon-md"
-            className="gap-1 rounded-lg text-ui-base"
+            className={`gap-1 rounded-lg text-ui-base ${NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME}`}
             onMouseDown={(event) => event.preventDefault()}
             aria-label={actionMenuTitle}
             data-testid={attachmentAction?.testId}

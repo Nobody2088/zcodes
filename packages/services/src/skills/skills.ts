@@ -2,6 +2,8 @@ import type {
   ZCodeProvider,
   SkillsPromptContext,
   SkillsListResult,
+  LocalSkillInstallResult,
+  LocalSkillPreview,
   SkillGitHubInstallResult,
   SkillGroupMutation,
   SkillGroupScope,
@@ -73,6 +75,18 @@ export interface ISkillsService {
     groupId: string;
     activationKeywords?: readonly string[];
   }): Promise<SkillGitHubInstallResult>;
+  /** 识别用户选出的文件夹里有哪些技能。不写入技能目录。 */
+  previewLocalSkills(params: { rootPath: string }): Promise<LocalSkillPreview>;
+  /** 把勾选的本地技能目录复制到通用或当前项目技能根。 */
+  installLocalSkills(params: {
+    workspacePath: string;
+    workspaceIdentity?: string;
+    scope: SkillGroupScope;
+    rootPath: string;
+    directories: readonly string[];
+    groupId: string;
+    activationKeywords?: readonly string[];
+  }): Promise<LocalSkillInstallResult>;
   checkSkillSourceUpdates(params: {
     workspacePath: string;
     workspaceIdentity?: string;

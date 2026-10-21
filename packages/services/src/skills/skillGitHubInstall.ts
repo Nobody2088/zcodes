@@ -1,5 +1,15 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -110,9 +120,11 @@ export async function installSkillTree(input: {
   scope: SkillGroupScope;
   groupId: string;
   groupName: string;
-  source: SkillInstallSource;
+  source?: SkillInstallSource;
   groups: SkillGroupsDocument;
   activationKeywords?: readonly string[];
+  /** 只安装这些技能目录（realpath）。缺省时安装扫描到的全部技能。 */
+  selectedDirectories?: ReadonlySet<string>;
 }): Promise<SkillTreeInstallResult> {
   const skillFiles = await collectSkillFiles(input.extractedRoot);
   const installed: InstalledSkillRecord[] = [];
@@ -122,8 +134,14 @@ export async function installSkillTree(input: {
 
   for (const skillFile of skillFiles) {
     const sourceDir = dirname(skillFile);
+    if (input.selectedDirectories) {
+      const canonicalDir = await realpath(sourceDir).catch(() => resolve(sourceDir));
+      if (!input.selectedDirectories.has(canonicalDir)) continue;
+    }
     const fallbackName =
-      sourceDir === input.extractedRoot ? input.source.repo : relativeName(sourceDir);
+      sourceDir === input.extractedRoot
+        ? (input.source?.repo ?? basename(sourceDir))
+        : relativeName(sourceDir);
     let adapted;
     try {
       adapted = adaptSkillMarkdown(
@@ -150,8 +168,14 @@ export async function installSkillTree(input: {
     const existingSkill = await isFile(join(targetDir, SKILL_FILE_NAME));
     if (
       existingSkill &&
+      input.source &&
       (!previous?.source || sourceKey(previous.source) !== sourceKey(input.source))
     ) {
+      skipped.push({ name: adapted.name, reason: "name-taken" });
+      continue;
+    }
+    // 本地导入不带 GitHub 来源。已有 GitHub 来源的同名目录留给在线更新，不覆盖。
+    if (existingSkill && !input.source && previous?.source) {
       skipped.push({ name: adapted.name, reason: "name-taken" });
       continue;
     }

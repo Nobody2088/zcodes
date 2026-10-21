@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME } from "@/lib/narrowShellPresentation.js";
 
 export function ComposerDialogueModeControl({
   disabled,
@@ -32,9 +33,10 @@ export function ComposerDialogueModeControl({
           data-testid="composer-dialogue-mode"
           data-composer-collapse-priority="0"
           aria-label={intl.formatMessage({ id: "chat.composer.dialogueMode.label" })}
-          className="group/dialogue h-7 w-auto gap-1 rounded-lg px-2 text-ui-base max-md:h-11 data-[composer-compact=true]:size-7 data-[composer-compact=true]:px-0"
+          // 窄屏同理：28px 视觉 + 伪元素 44px 命中区，图标回到 size-4 基线，与同行的 + / 模式 / CUA 对齐。
+          className={`group/dialogue h-7 w-auto gap-1 rounded-lg px-2 text-ui-base data-[composer-compact=true]:size-7 data-[composer-compact=true]:px-0 ${NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME}`}
         >
-          <BotIcon className="size-4 max-md:size-5" />
+          <BotIcon className="size-4" />
           <span className="max-w-16 truncate group-data-[composer-compact=true]/dialogue:hidden">
             {shortLabel}
           </span>

@@ -5,15 +5,16 @@ import type { BackgroundWorkSummary } from "@zcode/shared/zcode-protocol-v4";
 import { Button } from "@/components/ui/button.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME } from "@/lib/narrowShellPresentation.js";
 
-interface ComposerBackgroundWorkCounts {
+export interface ComposerBackgroundWorkCounts {
   bashCount: number;
   workflowCount: number;
   subagentCount: number;
   totalCount: number;
 }
 
-function getComposerBackgroundWorkCounts(
+export function getComposerBackgroundWorkCounts(
   backgroundWorks: readonly BackgroundWorkSummary[],
   runningSubagentCount = 0,
 ): ComposerBackgroundWorkCounts {
@@ -38,7 +39,7 @@ function getComposerBackgroundWorkCounts(
   };
 }
 
-interface ConversationBackgroundWorkTriggerProps {
+export interface ConversationBackgroundWorkTriggerProps {
   backgroundWorks: readonly BackgroundWorkSummary[];
   runningSubagentCount?: number;
   onOpen?: () => void;
@@ -58,7 +59,8 @@ function ConversationBackgroundWorkTriggerImpl({
 }: ConversationBackgroundWorkTriggerProps) {
   const { intl } = useZCodeIntl();
   const counts = useMemo(
-    () => getComposerBackgroundWorkCounts(backgroundWorks, runningSubagentCount),
+    () =>
+      getComposerBackgroundWorkCounts(backgroundWorks, runningSubagentCount),
     [backgroundWorks, runningSubagentCount],
   );
 
@@ -105,7 +107,7 @@ function ConversationBackgroundWorkTriggerImpl({
         data-background-open-target={openTarget}
         aria-label={ariaLabel}
         onClick={onOpen}
-        className="rounded-lg px-1.5 text-ui-base text-[var(--color-foreground-subtle)] tabular-nums"
+        className={`rounded-lg px-1.5 text-ui-base text-[var(--color-foreground-subtle)] tabular-nums ${NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME}`}
       >
         <span
           data-composer-background-layout="typed"
@@ -145,4 +147,6 @@ function ConversationBackgroundWorkTriggerImpl({
   );
 }
 
-export const ConversationBackgroundWorkTrigger = memo(ConversationBackgroundWorkTriggerImpl);
+export const ConversationBackgroundWorkTrigger = memo(
+  ConversationBackgroundWorkTriggerImpl,
+);

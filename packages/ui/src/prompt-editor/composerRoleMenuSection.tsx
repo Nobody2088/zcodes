@@ -10,6 +10,7 @@ import {
   Globe,
   Microscope,
   Radar,
+  RefreshCw,
   ScanSearch,
   Trophy,
   Waypoints,
@@ -20,6 +21,7 @@ import type { MentionPanelSection } from "@/mentions/components/MentionPanel.js"
 
 const ROLE_ICONS: Record<string, LucideIcon> = {
   默认: Circle,
+  重构项目: RefreshCw,
   二进制分析: Microscope,
   后渗透测试: Waypoints,
   容器安全: Container,
@@ -49,6 +51,20 @@ export function insertComposerRoleSection<T extends { id: string }>(
   return [...sections.slice(0, pluginsAt), roleSection, ...sections.slice(pluginsAt)];
 }
 
+export function composerRoleOptionMeta(role: ComposerRoleMeta): {
+  id: string;
+  label: string;
+  description: string;
+  detail: string;
+} {
+  return {
+    id: `role:${role.id}`,
+    label: role.name,
+    description: role.description,
+    detail: role.detail,
+  };
+}
+
 export function composerRoleMenuSection(
   roles: readonly ComposerRoleMeta[],
   selectedRoleId: string | undefined,
@@ -60,11 +76,9 @@ export function composerRoleMenuSection(
     title,
     emptyText: "",
     options: roles.map((role) => ({
-      id: `role:${role.id}`,
-      label: role.name,
-      description: role.description,
+      ...composerRoleOptionMeta(role),
       content: (
-        <>
+        <span className="flex min-w-0 flex-1 items-start gap-3" title={role.detail}>
           <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center" aria-hidden="true">
             {selectedRoleId === role.id ? <CheckIcon className="size-3.5" /> : null}
           </span>
@@ -75,7 +89,7 @@ export function composerRoleMenuSection(
               {role.description}
             </span>
           </span>
-        </>
+        </span>
       ),
     })),
   };

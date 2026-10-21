@@ -11,7 +11,7 @@ export async function writeInstalledSkillArtifacts(input: {
   adaptedName: string;
   descriptionZh: string;
   previous: SkillMetadata | undefined;
-  source: SkillInstallSource;
+  source?: SkillInstallSource;
   activationKeywords: readonly string[];
   activationKeywordsProvided: boolean;
 }): Promise<void> {
@@ -25,7 +25,7 @@ export async function writeInstalledSkillArtifacts(input: {
         ...(input.activationKeywords.length > 0
           ? { activationKeywords: [...input.activationKeywords] }
           : {}),
-        source: input.source,
+        ...(input.source ? { source: input.source } : {}),
       }),
       null,
       2,

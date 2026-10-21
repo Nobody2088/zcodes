@@ -669,6 +669,33 @@ test("resolveActiveApiKeyId returns null when the pool is empty", () => {
   );
 });
 
+test("resolveActiveApiKeyId uses an unprobed key after the current key leaves and no pool key remains", () => {
+  assert.equal(
+    resolveActiveApiKeyId({
+      keys: [
+        { id: "spent", group: "exhausted", remainingPercent: 0 },
+        { id: "next", group: "unknown", remainingPercent: null },
+      ],
+      currentKeyId: "spent",
+    }),
+    "next",
+  );
+});
+
+test("resolveActiveApiKeyId prefers a pool key over an unprobed key after the current key leaves", () => {
+  assert.equal(
+    resolveActiveApiKeyId({
+      keys: [
+        { id: "spent", group: "exhausted", remainingPercent: 0 },
+        { id: "unprobed", group: "unknown", remainingPercent: null },
+        poolKey("ready", 10),
+      ],
+      currentKeyId: "spent",
+    }),
+    "ready",
+  );
+});
+
 test("resolveActiveApiKeyId prefers a null remainingPercent pool key over a lower numeric remainder", () => {
   assert.equal(
     resolveActiveApiKeyId({
@@ -684,6 +711,29 @@ test("parsePooledRequestFailureStatus reads HTTP codes from Host error messages"
   assert.equal(parsePooledRequestFailureStatus("HTTP 401 Unauthorized"), 401);
   assert.equal(parsePooledRequestFailureStatus("429 Too Many Requests"), 429);
   assert.equal(parsePooledRequestFailureStatus("Provider returned a server error."), null);
+});
+
+test("readPooledRequestFailureFromTurnError reads providerErrorCode without a providerCode field", () => {
+  assert.deepEqual(
+    readPooledRequestFailureFromTurnError({
+      message: "Turn execution failed",
+      detail:
+        "provider=new-provider-2 provider_code=insufficient_user_quota model=glm-5.3-flash reason=invalid_request status=400 retryable=false",
+      attribution: {
+        pooledApiKeyId: "0123456789abcdef",
+        providerErrorCode: "insufficient_user_quota",
+        providerId: "new-provider-2",
+        reason: "invalid_request",
+        retryable: false,
+        statusCode: 400,
+      },
+    }),
+    {
+      failedKeyId: "0123456789abcdef",
+      providerId: "new-provider-2",
+      status: 402,
+    },
+  );
 });
 
 test("readPooledRequestFailureFromTurnError reads chat turn attribution without rotating mid-SSE", () => {

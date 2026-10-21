@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { apiKeyPoolKeyId } from "@zcode/shared/node";
 import { isApiKeyAccess, type ProviderConfigObject } from "@zcode/provider";
 import { createServiceLogger } from "../logger/serviceLogger.js";
 import type { ICredentialService } from "../credential/credential.js";
@@ -46,7 +46,7 @@ export function createStoredKey(
   label: string | null = null,
 ): StoredApiKey {
   return {
-    keyId: createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 16),
+    keyId: apiKeyPoolKeyId(secret),
     secret,
     addedAt,
     lastCheckedAt: null,
@@ -220,6 +220,19 @@ export function projectApiKeyPoolView(
       }),
     ),
   };
+}
+
+/**
+ * 号池里恰好一把 Key 时固定留在默认分组 Pool。
+ * 没有下一把可切，把它标成没有额度 / 冷却 / 过期 / 无效只会清空 overlay。
+ * 余额、剩余比例和 probeError 仍保留，只收回分组和冷却截止时间。
+ */
+export function retainSoleApiKeyInDefaultGroup(keys: StoredApiKey[]): void {
+  if (keys.length !== 1) return;
+  const only = keys[0];
+  if (!only || only.group === "pool") return;
+  only.group = "pool";
+  only.availableAt = null;
 }
 
 /** 自定义渠道（quotaQuery=none）：本地提升 unknown / 到期 cooling，不发 HTTP。 */

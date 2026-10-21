@@ -34,6 +34,7 @@ import {
   useToolbarShortcutBindings,
 } from "@/v4/composer/toolbarShortcuts.js";
 import type { V4ComposerToolbarProps } from "@/v4/composer/V4ComposerToolbar.js";
+import { NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME } from "@/lib/narrowShellPresentation.js";
 
 function noop(): void {}
 
@@ -61,7 +62,10 @@ function V4ComposerModeSwitchImpl({
   const modeShortcutLabel = useShortcutCommandLabel("cycleSessionMode");
   const modes = getZCodeAgentAvailableModes();
   const permissions = modes.filter((mode) => mode.id !== "plan");
-  const selected = permissions.find((mode) => mode.id === draftConfig?.mode);
+  // 新菜单隐藏 Edit，但历史草稿仍可回显，不能因候选变化隐藏整个权限入口。
+  const selected =
+    permissions.find((mode) => mode.id === draftConfig?.mode) ??
+    (draftConfig?.mode === "edit" ? { id: "edit", name: "Edit" } : undefined);
   const label = (mode: (typeof modes)[number]) =>
     getModeOptionDisplayLabel(intl, displayProvider, { value: mode.id, name: mode.name });
   const plan = modes.find((mode) => mode.id === "plan")!;
@@ -117,7 +121,10 @@ function V4ComposerModeSwitchImpl({
               aria-label={intl.formatMessage({ id: "chat.toolbar.mode.label" })}
               className={cn(
                 "group/mode size-7 gap-1 rounded-lg p-0 text-ui-base @xl/composer:w-auto @xl/composer:px-2 data-[composer-compact=true]:w-7 data-[composer-compact=true]:px-0",
+                NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME,
                 selected.id === "yolo" && "text-warning hover:text-warning",
+                selected.id === "guarded" &&
+                  "text-icon-blue hover:text-icon-blue aria-expanded:text-icon-blue",
               )}
             >
               <Icon className="size-4" />
@@ -201,7 +208,10 @@ function V4ComposerModeSwitchImpl({
               data-composer-collapse-priority="2"
               onClick={() => onSwitchMode("plan-off")}
               aria-label={intl.formatMessage({ id: "chat.plan.removeMarker" })}
-              className="group/plan size-7 gap-1 rounded-lg p-0 text-ui-base @xl/composer:w-auto @xl/composer:px-2 text-foreground-subtle hover:text-foreground-subtle data-[composer-compact=true]:w-7 data-[composer-compact=true]:px-0"
+              className={cn(
+                "group/plan size-7 gap-1 rounded-lg p-0 text-ui-base @xl/composer:w-auto @xl/composer:px-2 text-foreground-subtle hover:text-foreground-subtle data-[composer-compact=true]:w-7 data-[composer-compact=true]:px-0",
+                NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME,
+              )}
             >
               <LightbulbIcon className="size-4 group-hover/plan:hidden group-focus-visible/plan:hidden" />
               <XIcon className="hidden size-4 group-hover/plan:block group-focus-visible/plan:block" />

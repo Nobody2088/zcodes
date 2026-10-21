@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  FolderOpen,
   FolderPlus,
   Import,
   Languages,
@@ -29,6 +30,7 @@ import type {
   ZCodeProvider,
   SkillDiagnostic,
   SkillDiagnosticCode,
+  LocalSkillPreview,
   SkillGroupScope,
   SkillGroupsDocument,
   SkillSourceUpdate,
@@ -71,6 +73,7 @@ import {
 } from "@/settings/pluginStoreListing.js";
 import { SkillsImportDialog } from "@/settings/ExternalAgentImportDialog.js";
 import { SkillGroupSections } from "@/settings/SkillGroupSections.js";
+import { SkillLocalImportDialog } from "@/settings/SkillLocalImportDialog.js";
 import { SkillOnlineInstallDialog } from "@/settings/SkillOnlineInstallDialog.js";
 import { formatRemoteSkillSyncTarget } from "@/settings/RemoteSkillSyncDialog.js";
 import { RemoteSyncDialogs, shouldShowRemoteSyncActions } from "@/settings/RemoteSyncActions.js";
@@ -163,6 +166,7 @@ interface SkillsSectionProps {
   workspaceIdentity?: string;
   remoteSessionId?: string;
   remoteTarget?: RemoteTarget;
+  isWebRemoteControl?: boolean;
   scopeFilter: "user" | "workspace";
   searchQuery: string;
   onVisibleCountChange?: (count: number) => void;
@@ -178,6 +182,7 @@ export function SkillsSection({
   workspaceIdentity,
   remoteSessionId,
   remoteTarget,
+  isWebRemoteControl = false,
   scopeFilter,
   searchQuery,
   onVisibleCountChange,
@@ -242,6 +247,9 @@ export function SkillsSection({
     createEmptySkillGroupsDocument(),
   );
   const [installOpen, setInstallOpen] = useState(false);
+  const [localImportOpen, setLocalImportOpen] = useState(false);
+  const [localPreview, setLocalPreview] = useState<LocalSkillPreview | null>(null);
+  const [scanningLocalSkills, setScanningLocalSkills] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installScope, setInstallScope] = useState<SkillGroupScope>(scopeFilter);
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
@@ -277,7 +285,7 @@ export function SkillsSection({
     shouldShowRemoteSyncActions({
       remoteSessionId,
       remoteTarget,
-      clientMode: "desktop-continuous" as const,
+      clientMode: isWebRemoteControl ? "web-remote-replayable" : "desktop-continuous",
       hasLocalSourceService: Boolean(baseServices.skillSyncService),
     }) &&
     activeWorkspacePath
@@ -617,6 +625,8 @@ export function SkillsSection({
       intl.formatMessage({ id: "settings.skills.noDescription" }),
     [intl, locale],
   );
+  // 注意：filteredSkillCount 已在上方按 skillGroupSections（本 fork 的分组投影）定义，
+  // 这里不再重复声明，避免遮蔽。
   const hasEmptySearchResult = Boolean(query.trim()) && filteredSkillCount === 0;
   const pluginIconItemById = useMemo(
     () =>
@@ -866,6 +876,91 @@ export function SkillsSection({
     [activeWorkspaceIdentity, activeWorkspacePath, intl, loadSkills, skillsService],
   );
 
+  const handlePickLocalSkills = useCallback(async () => {
+    if (!platform.canSelectFilePath) return;
+    const rootPath = await platform.selectDirectory();
+    if (!rootPath) return;
+    setScanningLocalSkills(true);
+    try {
+      const preview = await skillsService.previewLocalSkills({ rootPath });
+      if (preview.skills.length === 0) {
+        toast(intl.formatMessage({ id: "settings.skills.localImport.empty" }), {
+          variant: "warning",
+        });
+        return;
+      }
+      setInstallScope(scopeFilter);
+      setLocalPreview(preview);
+      setLocalImportOpen(true);
+    } catch (scanError) {
+      toast(
+        scanError instanceof Error
+          ? scanError.message
+          : intl.formatMessage({ id: "settings.skills.install.failed" }),
+        { variant: "warning" },
+      );
+    } finally {
+      setScanningLocalSkills(false);
+    }
+  }, [intl, platform, scopeFilter, skillsService]);
+
+  const handleInstallLocalSkills = useCallback(
+    async (input: {
+      directories: string[];
+      groupId: string;
+      newGroupName: string;
+      scope: SkillGroupScope;
+    }) => {
+      if (!activeWorkspacePath || !localPreview) return;
+      setInstalling(true);
+      try {
+        let groupId = input.groupId;
+        if (input.newGroupName.trim()) {
+          const created = await skillsService.mutateSkillGroups({
+            workspacePath: activeWorkspacePath,
+            workspaceIdentity: activeWorkspaceIdentity,
+            scope: input.scope,
+            mutation: {
+              type: "create",
+              id: `group-${crypto.randomUUID()}`,
+              name: input.newGroupName,
+            },
+          });
+          if (input.scope === "user") setUserGroups(created);
+          else setWorkspaceGroups(created);
+          groupId = created.groups.at(-1)?.id ?? groupId;
+        }
+        const result = await skillsService.installLocalSkills({
+          workspacePath: activeWorkspacePath,
+          workspaceIdentity: activeWorkspaceIdentity,
+          scope: input.scope,
+          rootPath: localPreview.rootPath,
+          directories: input.directories,
+          groupId,
+        });
+        toast(
+          intl.formatMessage(
+            { id: "settings.skills.install.success" },
+            { count: result.installed.length },
+          ),
+          { variant: "info" },
+        );
+        setLocalImportOpen(false);
+        await loadSkills(false);
+      } catch (installError) {
+        toast(
+          installError instanceof Error
+            ? installError.message
+            : intl.formatMessage({ id: "settings.skills.install.failed" }),
+          { variant: "warning" },
+        );
+      } finally {
+        setInstalling(false);
+      }
+    },
+    [activeWorkspaceIdentity, activeWorkspacePath, intl, loadSkills, localPreview, skillsService],
+  );
+
   const handleCheckUpdates = useCallback(async () => {
     if (!activeWorkspacePath) return;
     setCheckingUpdates(true);
@@ -1005,7 +1100,7 @@ export function SkillsSection({
 
   return (
     <div className="space-y-4">
-      {/* 独立 Skills 分区的详情是弹窗，不属于页面级导航；只有插件容器需要上报详情层级。 */}
+      {/* Bug 原因：独立 Skills 分区的详情是弹窗，不属于页面级导航；只有插件容器需要上报详情层级。 */}
       {reportDetailBreadcrumb && detailSkill ? (
         <SettingsBreadcrumbReporter
           items={
@@ -1145,6 +1240,21 @@ export function SkillsSection({
                 <Plus data-icon="inline-start" aria-hidden="true" />
                 {intl.formatMessage({ id: "settings.skills.install.open" })}
               </Button>
+              {platform.canSelectFilePath ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={scanningLocalSkills || !capability?.userScopeAvailable}
+                  onClick={() => void handlePickLocalSkills()}
+                >
+                  <FolderOpen data-icon="inline-start" aria-hidden="true" />
+                  {intl.formatMessage({
+                    id: scanningLocalSkills
+                      ? "settings.skills.localImport.scanning"
+                      : "settings.skills.localImport.open",
+                  })}
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
@@ -1209,6 +1319,18 @@ export function SkillsSection({
                       id: "settings.plugin.skills.newSkill",
                     })}
                   </Button>
+                  {platform.canSelectFilePath ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="lg"
+                      disabled={scanningLocalSkills || !capability?.userScopeAvailable}
+                      onClick={() => void handlePickLocalSkills()}
+                    >
+                      <FolderOpen data-icon="inline-start" aria-hidden="true" />
+                      {intl.formatMessage({ id: "settings.skills.localImport.open" })}
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="outline"
@@ -1393,6 +1515,20 @@ export function SkillsSection({
           </form>
         </DialogContent>
       </Dialog>
+      {localPreview ? (
+        <SkillLocalImportDialog
+          key={localPreview.rootPath}
+          open={localImportOpen}
+          installing={installing}
+          rootPath={localPreview.rootPath}
+          skills={localPreview.skills}
+          scope={installScope}
+          groups={installGroups}
+          onOpenChange={setLocalImportOpen}
+          onScopeChange={setInstallScope}
+          onInstall={(input) => void handleInstallLocalSkills(input)}
+        />
+      ) : null}
       <SkillOnlineInstallDialog
         open={installOpen}
         installing={installing}

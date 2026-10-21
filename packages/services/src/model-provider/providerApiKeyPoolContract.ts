@@ -67,6 +67,18 @@ export interface ProviderApiKeyPoolAddResult {
   readonly view: ProviderApiKeyPoolView;
 }
 
+export interface ProviderApiKeyPoolActiveKey {
+  readonly apiKey: string;
+  readonly keyId: string;
+}
+
+/** 子代理换钥结果。rotated 为 false 时不带明文。 */
+export interface ProviderApiKeyPoolFailoverResult {
+  readonly rotated: boolean;
+  readonly apiKey?: string;
+  readonly keyId?: string;
+}
+
 export interface IProviderApiKeyPoolService {
   readonly onDidChange: Event<ProviderApiKeyPoolView>;
   getView(providerId: string): Promise<ProviderApiKeyPoolView>;
@@ -74,7 +86,23 @@ export interface IProviderApiKeyPoolService {
   deleteKeys(providerId: string, keyIds: readonly string[]): Promise<ProviderApiKeyPoolView>;
   probeKeys(providerId: string, keyIds?: readonly string[]): Promise<ProviderApiKeyPoolView>;
   selectActiveKey(providerId: string, keyId: string): Promise<ProviderApiKeyPoolView>;
-  noteRequestFailure(providerId: string, status: number): Promise<ProviderApiKeyPoolView>;
+  noteRequestFailure(
+    providerId: string,
+    status: number,
+    failedKeyId?: string,
+  ): Promise<ProviderApiKeyPoolView>;
+  /** 只读当前号池 Key。不探测、不改分组。 */
+  readActiveKey(providerId: string): Promise<ProviderApiKeyPoolActiveKey | null>;
+  /**
+   * 失败后改选下一把 Key。分类对象是 failedKeyId，不是此刻的 overlay。
+   * failedKeyId 缺省时与 noteRequestFailure 一样处理当前 overlay。
+   * 只有改选到另一把仍可用的 Key 时 rotated 为 true。
+   */
+  claimNextKeyAfterFailure(
+    providerId: string,
+    failedKeyId: string | undefined,
+    status: number,
+  ): Promise<ProviderApiKeyPoolFailoverResult>;
   revealKey(providerId: string, keyId: string): Promise<string>;
 }
 

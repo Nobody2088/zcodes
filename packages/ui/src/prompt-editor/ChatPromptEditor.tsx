@@ -61,6 +61,7 @@ export function ChatPromptEditor({
   isDraggingOver = false,
   dragAttachmentHint,
   topContent,
+  inputLeadingContent,
   leadingActions,
   dialogueModeControl,
   selectedComposerRoleId,
@@ -77,6 +78,7 @@ export function ChatPromptEditor({
   promptHistory,
   className,
   shellClassName,
+  avoidIosInputFocusZoom = false,
   compactPlaceholder = false,
   onChange,
   onSubmit,
@@ -115,6 +117,8 @@ export function ChatPromptEditor({
   isDraggingOver?: boolean;
   dragAttachmentHint?: string;
   topContent?: ReactNode;
+  /** 与输入正文同一行的前置内容；Highspeed 使用紧凑 Fast 标签。 */
+  inputLeadingContent?: ReactNode;
   leadingActions?: ReactNode;
   dialogueModeControl?: ReactNode;
   selectedComposerRoleId?: string;
@@ -145,6 +149,7 @@ export function ChatPromptEditor({
   promptHistory?: readonly string[];
   className?: string;
   shellClassName?: string;
+  avoidIosInputFocusZoom?: boolean;
   compactPlaceholder?: boolean;
   onChange?: (value: string) => void;
   // 适配：返回 false 表示业务层拒绝/延迟本次提交，Lexical 不自行 reset（草稿保留）。
@@ -345,6 +350,35 @@ export function ChatPromptEditor({
       ? dragAttachmentHint
       : undefined;
 
+  const editorNode = (
+    <LexicalChatInput
+      placeholder={placeholder}
+      disabled={disabled}
+      submitDisabled={submitDisabled}
+      allowSubmitWhenEmpty={allowSubmitWhenEmpty}
+          enterSubmits={enterSubmits}
+          onSubmit={handleEditorSubmit}
+          onModifiedSubmit={onModifiedSubmit}
+      onChange={handleTextChange}
+      onFocus={onFocus}
+      triggerPanelContainer={resolvedTriggerPanelContainer}
+      workspacePath={workspacePath}
+      workspaceIdentity={workspaceIdentity}
+      taskId={taskId}
+      skillCatalogSessionId={skillCatalogSessionId}
+      inputTestId={inputTestId}
+      editorApiRef={resolvedInputApiRef}
+      promptHistory={promptHistory}
+      avoidIosInputFocusZoom={avoidIosInputFocusZoom}
+      compactPlaceholder={compactPlaceholder}
+      onWhiteboardMentionSelected={onWhiteboardMentionSelected}
+      onPaste={onPaste}
+      excludedSlashCommandNames={excludedSlashCommandNames}
+      appSlashCommands={appSlashCommands}
+      enableMentionPanel={enableMentionPanel}
+    />
+  );
+
   return (
     <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} className={cn("relative", className)}>
       {triggerPanelContainer ? null : (
@@ -374,32 +408,20 @@ export function ChatPromptEditor({
         ) : null}
 
         {topContent}
-        <LexicalChatInput
-          placeholder={placeholder}
-          disabled={disabled}
-          submitDisabled={submitDisabled}
-          allowSubmitWhenEmpty={allowSubmitWhenEmpty}
-          enterSubmits={enterSubmits}
-          onSubmit={handleEditorSubmit}
-          onModifiedSubmit={onModifiedSubmit}
-          onChange={handleTextChange}
-          onFocus={onFocus}
-          triggerPanelContainer={resolvedTriggerPanelContainer}
-          workspacePath={workspacePath}
-          workspaceIdentity={workspaceIdentity}
-          taskId={taskId}
-          skillCatalogSessionId={skillCatalogSessionId}
-          inputTestId={inputTestId}
-          editorApiRef={resolvedInputApiRef}
-          promptHistory={promptHistory}
-          compactPlaceholder={compactPlaceholder}
-          onWhiteboardMentionSelected={onWhiteboardMentionSelected}
-          onPaste={onPaste}
-          excludedSlashCommandNames={excludedSlashCommandNames}
-          appSlashCommands={appSlashCommands}
-          enableMentionPanel={enableMentionPanel}
-        />
-        <div ref={toolbarRef} className="group/toolbar flex items-end gap-3">
+        {inputLeadingContent ? (
+          <div className="flex min-w-0 items-start gap-2">
+            <div className="shrink-0">{inputLeadingContent}</div>
+            <div className="min-w-0 flex-1">{editorNode}</div>
+          </div>
+        ) : (
+          editorNode
+        )}
+        {/* 窄屏工具条折成两行：上行是工具入口，下行是模型/思考/上下文用量 + 发送、停止。
+            单行时手机可用宽度装不下「入口 + 模型名 + 44px 发送键」，溢出的入口会盖住模型名与发送键。 */}
+        <div
+          ref={toolbarRef}
+          className="group/toolbar flex items-end gap-3 max-md:grid max-md:grid-cols-1 max-md:items-stretch max-md:gap-2"
+        >
           <div className="flex min-w-0 flex-1 items-center" data-composer-leading-actions>
             <div className="flex shrink-0 items-center gap-1" data-composer-leading-content>
               {hasActionMenu ? (
@@ -420,7 +442,7 @@ export function ChatPromptEditor({
                 />
               ) : null}
               {dialogueModeControl}
-              {/* 权限/模式选择曾作为 leadingActions 先于动作菜单渲染，导致常驻顺序与产品规范相反。*/}
+              {/* Bugfix：权限/模式选择曾作为 leadingActions 先于动作菜单渲染，导致常驻顺序与产品规范相反。 */}
               {leadingActions}
               {onModeSwitchContainerChange ? (
                 <span ref={onModeSwitchContainerChange} className="flex shrink-0 items-center" />
@@ -428,7 +450,9 @@ export function ChatPromptEditor({
             </div>
           </div>
           <div
-            className="ml-auto flex shrink-0 items-center justify-end gap-1.5"
+            // 窄屏独占第二行：模型簇占满左侧剩余宽度（min-w-0 让模型名截断而不是撑破行），发送/停止贴在行尾。
+            // 行内间距窄屏收到 4px，与上行工具入口一致；行间 8px、与输入框 12px 见 spec 第 3 节。
+            className="ml-auto flex shrink-0 items-center justify-end gap-1.5 max-md:ml-0 max-md:w-full max-md:min-w-0 max-md:gap-1"
             data-composer-trailing-actions
           >
             {onCancel && cancelLabel ? (

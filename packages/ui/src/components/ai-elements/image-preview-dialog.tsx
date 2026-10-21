@@ -403,12 +403,14 @@ export function ImagePreviewDialog({
         <DialogTitle className="sr-only">
           {activeItem?.alt || intl.formatMessage({ id: "chat.attachments.preview.title" })}
         </DialogTitle>
-        <div className="pointer-events-auto absolute right-4 top-4 z-20 flex items-center gap-2 [app-region:no-drag] platform-mac-desktop:top-12 platform-linux-desktop:right-6 platform-linux-desktop:top-4 platform-windows-desktop:right-6 platform-windows-desktop:top-[calc(env(titlebar-area-height,48px)_+_0.5rem)]">
+        {/* 窄屏（手机远控 / 手机浏览器）里这一行必须落在状态栏、灵动岛下面，并让出 iOS 外壳注入的
+            52px 会话菜单槽位：固定在 top-4 时下载、关闭键会被状态栏和原生菜单键盖住，用户找不到关闭入口。 */}
+        <div className="pointer-events-auto absolute right-4 top-4 z-20 flex items-center gap-2 [app-region:no-drag] max-md:right-[calc(max(0.5rem,env(safe-area-inset-right,0px))+var(--zcode-native-trailing-inset,0px))] max-md:top-[calc(env(safe-area-inset-top,0px)+0.5rem)] platform-mac-desktop:top-12 platform-linux-desktop:right-6 platform-linux-desktop:top-4 platform-windows-desktop:right-6 platform-windows-desktop:top-[calc(env(titlebar-area-height,48px)_+_0.5rem)]">
           {!activeItemIsVideo ? (
             <Button
               type="button"
               aria-label={intl.formatMessage({ id: "markdownImage.download" })}
-              className="rounded-full border border-border bg-background text-foreground shadow-md hover:bg-background/80"
+              className="rounded-full border border-border bg-background text-foreground shadow-md hover:bg-background/80 max-md:size-11 max-md:[&_svg:not([class*='size-'])]:size-5"
               disabled={!activeItem?.src || isDownloading}
               onClick={downloadActiveImage}
               size="icon-md"
@@ -421,7 +423,7 @@ export function ImagePreviewDialog({
             <Button
               type="button"
               aria-label={intl.formatMessage({ id: "common.close" })}
-              className="rounded-full border border-border bg-background text-foreground shadow-md hover:bg-background/80"
+              className="rounded-full border border-border bg-background text-foreground shadow-md hover:bg-background/80 max-md:size-11 max-md:[&_svg:not([class*='size-'])]:size-5"
               size="icon-md"
               variant="ghost"
             >
@@ -531,11 +533,12 @@ export function ImagePreviewDialog({
           ) : null
         ) : null}
         {!activeItemIsVideo ? (
-          <div className="pointer-events-auto absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-popover-border bg-popover/95 p-1 shadow-md [app-region:no-drag]">
+          // 窄屏让出底部安全区，放大缩小键用伪元素把命中高度补到 44px（视觉尺寸不变，横向不扩，不压中间的百分比）。
+          <div className="pointer-events-auto absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-popover-border bg-popover/95 p-1 shadow-md [app-region:no-drag] max-md:bottom-[calc(env(safe-area-inset-bottom,0px)+0.5rem)]">
             <Button
               type="button"
               aria-label={intl.formatMessage({ id: "markdownImage.zoomOut" })}
-              className="rounded-full"
+              className="relative rounded-full max-md:after:absolute max-md:after:inset-x-0 max-md:after:-inset-y-2.5"
               disabled={previewScale <= 0.5}
               onClick={() => changePreviewScale(-0.5)}
               size="icon-sm"
@@ -549,7 +552,7 @@ export function ImagePreviewDialog({
             <Button
               type="button"
               aria-label={intl.formatMessage({ id: "markdownImage.zoomIn" })}
-              className="rounded-full"
+              className="relative rounded-full max-md:after:absolute max-md:after:inset-x-0 max-md:after:-inset-y-2.5"
               disabled={previewScale >= 3}
               onClick={() => changePreviewScale(0.5)}
               size="icon-sm"

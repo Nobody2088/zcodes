@@ -20,6 +20,10 @@ import {
   listInstalledSources,
   replaceDirectory,
 } from "../src/skills/skillGitHubInstall.js";
+import {
+  previewLocalSkillDirectory,
+  resolveSelectedSkillDirectories,
+} from "../src/skills/skillLocalImport.js";
 
 test("skill group mutations rename, reorder, and delete without removing skills", () => {
   const seeded = createSeededUserSkillGroupsDocument();
@@ -352,5 +356,70 @@ test("user groups are seeded once and keep later edits", async () => {
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("local folder preview lists skills and install copies only the checked ones", async () => {
+  const source = await mkdtemp(join(tmpdir(), "zcode-skill-local-src-"));
+  const target = await mkdtemp(join(tmpdir(), "zcode-skill-local-dst-"));
+  const skillRoot = join(source, "project-fidelity-rebuild");
+  await mkdir(join(skillRoot, "references"), { recursive: true });
+  await writeFile(
+    join(skillRoot, "SKILL.md"),
+    "---\nname: project-fidelity-rebuild\ndescription: 保真重构\n---\n# Body\n",
+    "utf8",
+  );
+  await writeFile(join(skillRoot, "references", "notes.md"), "keep me\n", "utf8");
+  const other = join(source, "other-skill");
+  await mkdir(other, { recursive: true });
+  await writeFile(
+    join(other, "SKILL.md"),
+    "---\nname: other-skill\ndescription: leave this one\n---\n# Other\n",
+    "utf8",
+  );
+  try {
+    const preview = await previewLocalSkillDirectory(source);
+    assert.deepEqual(
+      preview.skills.map((skill) => skill.name).sort(),
+      ["other-skill", "project-fidelity-rebuild"],
+    );
+    const chosen = preview.skills.find((skill) => skill.name === "project-fidelity-rebuild");
+    assert.ok(chosen);
+    const { root, selected } = await resolveSelectedSkillDirectories(preview.rootPath, [
+      chosen.directory,
+    ]);
+    await assert.rejects(
+      () => resolveSelectedSkillDirectories(preview.rootPath, [target]),
+      /outside-root/,
+    );
+    const installed = await installSkillTree({
+      extractedRoot: root,
+      targetRoot: join(target, ".zcode", "skills"),
+      scope: "user",
+      groupId: "",
+      groupName: "未分组",
+      groups: { groups: [], assignments: [], initialized: true },
+      selectedDirectories: selected,
+    });
+    assert.deepEqual(
+      installed.installed.map((skill) => skill.name),
+      ["project-fidelity-rebuild"],
+    );
+    assert.equal(
+      await readFile(
+        join(target, ".zcode", "skills", "project-fidelity-rebuild", "references", "notes.md"),
+        "utf8",
+      ),
+      "keep me\n",
+    );
+    assert.equal(
+      await readFile(join(target, ".zcode", "skills", "other-skill", "SKILL.md"), "utf8").catch(
+        () => "",
+      ),
+      "",
+    );
+  } finally {
+    await rm(source, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
   }
 });

@@ -49,6 +49,19 @@ export const NARROW_DIALOG_FOOTER_CLASS_NAME = "max-md:*:min-h-11";
 export const NARROW_TOUCH_TARGET_CLASS_NAME = "max-md:min-h-11";
 
 /**
+ * 输入栏工具条里的次级图标入口(动作菜单、模式选择、Plan 标记、CUA、后台任务、思考档位、上下文用量):
+ * 视觉尺寸保持 28px,命中高度用伪元素上下各扩 8px 补到 44px,横向不扩——同一行相邻入口之间只有 4px,
+ * 横向扩会互相压住。规范见 ../specs/mobile-narrow-shell.md 第 3 节。
+ *
+ * 为什么不直接写 `max-md:h-11` / `max-md:size-11`:这些入口带 `data-[composer-compact=true]:size-7`,
+ * 生成 CSS 里属性选择器的特异性(0,2,0)高于 `max-md:h-11`(0,1,0),压缩态一开命中区就掉回 28px;
+ * 伪元素只加命中区、不参与尺寸类竞争,两种压缩态下都稳定 44px。
+ * 入口自身若是 h-7/size-7(28px),-inset-y-2 正好是 8+28+8=44。
+ */
+export const NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME =
+  "max-md:relative max-md:after:absolute max-md:after:inset-x-0 max-md:after:-inset-y-2";
+
+/**
  * 窄屏锚定菜单(模型选择器单面板)的最大高度。Radix 的 available-height 从触发器量到布局视口
  * 边缘;viewport-fit=cover 下视口顶端就是屏幕最上沿,从输入栏向上弹出的面板会伸进状态栏、顶栏
  * (WorkspaceHeader 窄屏高 3.5rem + 顶部安全区)和 iOS 原生会话按钮下面,列表滚到顶时第一项

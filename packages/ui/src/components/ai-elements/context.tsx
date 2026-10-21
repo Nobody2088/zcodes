@@ -145,8 +145,11 @@ export type ContextContentProps = ComponentProps<typeof HoverCardContent>;
 
 export const ContextContent = ({ className, ...props }: ContextContentProps) => (
   <HoverCardContent
+    // 窄屏（手机远控 / 手机浏览器）：面板里有上下文、coding plan 余额、今日余额与升级入口，
+    // 固定宽度会在 <352px 视口被裁、矮视口（横屏、键盘弹起）又滚不动；这里按视口收窄并允许内部滚动。
     className={cn(
       "!w-64 overflow-hidden rounded-lg border border-border bg-tooltip p-0 text-tooltip-foreground shadow-none ring-0 outline-0",
+      "max-md:max-h-[min(var(--radix-hover-card-content-available-height),70dvh)] max-md:overflow-y-auto max-md:overscroll-contain",
       className,
     )}
     {...props}

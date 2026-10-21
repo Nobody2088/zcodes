@@ -82,10 +82,12 @@ export function OccupationOnboarding({
   const savingRef = useRef(false);
   const [error, setError] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const loadDeviceMid = useCallback(() => platform.getDeviceId(), [platform]);
   const [needsOnboarding, markOnboarded] = useOnboardingTrigger({
     onboardingRecord,
     userId,
     hasStoredOccupation: Boolean(settings?.onboardingOccupation),
+    loadDeviceMid,
     update,
   });
   const onboardingVisible = requested || (needsOnboarding === true && !dismissed);
@@ -108,7 +110,12 @@ export function OccupationOnboarding({
     setStep(0);
     setDismissed(true);
     setRequested(false);
-  }, [captureEnd, intl, setRequested]);
+    if (onboardingRecord) {
+      void onboardingRecord.dismissOnboarding(platform.getDeviceId()).catch((cause: unknown) => {
+        logger.warn("[occupation-onboarding] 写入关闭决策失败", { error: String(cause) });
+      });
+    }
+  }, [captureEnd, intl, onboardingRecord, platform, setRequested]);
   useOccupationOnboardingHotkeys({
     shortcutBindings,
     saving,

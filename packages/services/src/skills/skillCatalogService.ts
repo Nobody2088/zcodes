@@ -9,6 +9,8 @@ import {
   skillSourceUpdateAvailable,
   SkillGroupMutationError,
   validateActivationKeywords,
+  type LocalSkillInstallResult,
+  type LocalSkillPreview,
   type SkillGitHubInstallResult,
   type SkillGroupMutation,
   type SkillGroupScope,
@@ -24,6 +26,7 @@ import {
   installSkillTree,
   listInstalledSources,
 } from "./skillGitHubInstall.js";
+import { installSelectedLocalSkills, previewLocalSkillDirectory } from "./skillLocalImport.js";
 import {
   loadSkillGroupsDocument,
   readSkillGroupsDocument,
@@ -80,6 +83,19 @@ export function createSkillCatalogApi(resolveUserHomeDir: () => string = default
       },
     ): Promise<SkillGitHubInstallResult> {
       return installFromRepository(params, resolveUserHomeDir);
+    },
+    previewLocalSkills(params: { rootPath: string }): Promise<LocalSkillPreview> {
+      return previewLocalSkillDirectory(params.rootPath);
+    },
+    installLocalSkills(
+      params: SkillCatalogContext & {
+        rootPath: string;
+        directories: readonly string[];
+        groupId: string;
+        activationKeywords?: readonly string[];
+      },
+    ): Promise<LocalSkillInstallResult> {
+      return installSelectedLocalSkills(params, resolveUserHomeDir);
     },
     checkSkillSourceUpdates(params: SkillCatalogContext): Promise<SkillSourceUpdate[]> {
       return checkUpdates(params, resolveUserHomeDir);

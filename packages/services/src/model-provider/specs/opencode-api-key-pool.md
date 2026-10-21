@@ -22,7 +22,7 @@
 
 ## Owner
 
-`IProviderApiKeyPoolService` 是可变池状态的唯一所有者。密钥与探测事实加密写在 `ICredentialService`（key：`provider-api-key-pool:{providerId}`）。**当前调用 Key**（`activeKeyId`）也由 Host 拥有，并投影到 overlay `access.apiKey`。创建号池 / `addKeys` 时，**已有 overlay 明文就是默认当前 Key**，不得只因为另一把号池 Key 剩余额度更高而覆盖。只有当前 Key 离开号池（冷却 / 过期 / 无效 / 删除）后，才用剩余额度最高的号池 Key 做回退。Runtime 不另建第二份池，也不在请求中途轮换；下一次请求读到的是已经切换后的 overlay。Renderer 只展示 `activeKeyId` 与分组，不得自报下一把 Key。
+`IProviderApiKeyPoolService` 是可变池状态的唯一所有者。密钥与探测事实加密写在 `ICredentialService`（key：`provider-api-key-pool:{providerId}`）。**当前调用 Key**（`activeKeyId`）也由 Host 拥有，并投影到 overlay `access.apiKey`。创建号池 / `addKeys` 时，**已有 overlay 明文就是默认当前 Key**，不得只因为另一把号池 Key 剩余额度更高而覆盖。只有当前 Key 离开号池（冷却 / 过期 / 无效 / 删除）后，才用剩余额度最高的号池 Key 做回退。Runtime 不另建第二份池。走这条渠道的请求在可见输出前遇到 401/403/429，由 Host 把失败 Key 归组并改选，然后同一次请求再用下一把 Key 重发。Renderer 只展示 `activeKeyId` 与分组，不得自报下一把 Key。
 
 ## 命令
 
@@ -133,6 +133,12 @@ Zen：官方 `https://opencode.ai/zen/v1` 可额外打兄弟路径 `https://open
 
 `Exhausted` 由余额制渠道引入。它和 Cooling 一样属于「已离开号池」（`hasLeftApiKeyPool` 为 true，当前钥会被改选），但**不**进入冷却到期复检队列。UI 文案走 i18n（「没有额度」）。该页签只在 `quotaQuery === "balance"` 或该组已有 Key 时出现，OpenCode Go 的分组页签不因此多出一个空组。
 
+### 只有一把 Key
+
+号池里**恰好一把** Key 时，这把 Key 固定留在默认分组 Pool（界面「可用」）。探测或请求无论结果是没有额度、冷却、过期、无效，还是 401 / 402 / 403 / 429，都**不得**把它移出 Pool。余额、剩余比例、`probeError`、会员状态仍按本次事实写入，只是分组不离开。没有第二把 Key 可切时，离开 Pool 只会清空 overlay，这把唯一的 Key 也不能继续作为当前 Key。
+
+第二把 Key 写入之后，归组规则恢复：再探测或再遇到请求失败时，可以按 HTTP / 余额事实离开 Pool。删到只剩一把时，下一次落盘把剩下的那把固定回 Pool。`unknown` 在只有一把时同样收进 Pool，不单独留在「未知」。
+
 UI `remainingMs = max(0, availableAt - now)`。`setTimeout` 只刷新展示，不是状态源。`remainingMs === 0` 时 UI 请求 `probeKeys`；`getView` 对到期 Cooling 也会复检。复检可用则自动回到 Pool，并清空 `availableAt`。
 
 消失的 Key（401/已删除）进入 Invalid 或 Expired，不从存储里自动抹掉，除非用户删除。
@@ -142,20 +148,34 @@ UI `remainingMs = max(0, availableAt - now)`。`setTimeout` 只刷新展示，�
 - 用户 `selectActiveKey` 只能指定 `group === "pool"` 的成员；冷却组要等复检回池后再选。
 - **创建号池或 `addKeys`：** 若 overlay 已有明文，先 `importOverlayKey`，该 Key 就是默认 `activeKeyId`。即便尚未探测、分组仍是 `unknown`，也算「还没离开」，必须继续投影这把明文。禁止用「剩余最高」抢掉一把还能用的 overlay。
 - 当前 Key 仍在（`pool` 或尚未证实离开的 `unknown`）：保持不动。剩余额度只用于当前 Key **已经离开** 之后的回退，不是改选理由。
-- 当前 Key 进入冷却 / 没有额度 / 过期 / 无效，或被删除：改选号池里 `remainingPercent` 最高的 Key（`null` 视为 100，适配无数字额度与 unlimited 余额）。Exhausted 与 Cooling 一样已离开号池，但没有 `availableAt`，不进入冷却到期复检。
-- 号池为空且当前 Key 也已离开：`activeKeyId = null`，overlay `apiKey = null`。当前 Key 仍是 overlay/`unknown` 时，即使其它钥还没入池，也不得把 overlay 清成 `null`。
-- **号池里还有成员时，禁止把 overlay 清成 `null`。** 禁止把冷却 Key 投影给 Runtime。
+- 当前 Key 进入冷却 / 没有额度 / 过期 / 无效，或被删除：先改选号池里 `remainingPercent` 最高的 Key（`null` 视为 100，适配无数字额度与 unlimited 余额）。没有 `pool` 成员时，尚未证实离开的 `unknown` 也可以当下一把。不得因为 `unknown` 的空剩余被当成 100，而盖过一把已经在号池里的 Key。Exhausted 与 Cooling 一样已离开号池，但没有 `availableAt`，不进入冷却到期复检。
+- 号池为空且当前 Key 也已离开：`activeKeyId = null`，overlay `apiKey = null`。当前 Key 仍是 overlay/`unknown` 时，即使其它钥还没入池，也不得把 overlay 清成 `null`。号池里恰好一把 Key 时，这把 Key 还在 Pool，overlay 保持这把明文。
+- **号池里还有成员时，禁止把 overlay 清成 `null`。** 禁止把冷却 Key 投影给 Runtime。只有一把 Key 时它不会进入冷却，因此仍投影给 Runtime。
 
-## 请求失败后的下一跳（不中途轮换）
+## 请求失败后的下一跳
 
-Runtime **不**在同一次请求里换 Key。Host 命令 `noteRequestFailure(providerId, status)` 只改池事实和 overlay，供 **下一次** 请求读取。对 **所有** 适用供应商（含非 OpenCode）生效。`selectActiveKey` 可以改 overlay；若这把 Key 随后在连通性测试或 **chat turn.failed** 上返回 401/403/429，Host 必须调用该命令，把 overlay 改到另一把仍在号池的 Key（号池非空则不得写成 `null`）。干净钩子是 Host 已观察到的终态 `turn.failed`（及连通性测试返回），不是 SSE 中途 attempt。不要为了 500 去改官方重试环（500 是上游，换 Key 也救不了 glm 打错协议）。
+号池上的每一次模型请求（主会话、子代理、压缩、连通性探测、标题 sidecar）都用同一把当前 Key，并共用同一个 `pooledApiKeyFailoverPort`。Runtime 在模型调用上下文里补上读钥 / 换钥端口；调用方已经带了端口时不覆盖。默认 Key 在**还没有可见输出**时返回 401/403/429，或 HTTP 400 但正文已经说明余额不足（`insufficient_user_quota`、`credit insufficient balance`），就把这把 Key 归进对应分组，并立刻用下一把号池 Key 重发这一次请求，直到成功或没有下一把。余额不足进入 **没有额度**（`exhausted`），不得标成 Invalid。分类器会把这种 HTTP 400 收成不可重试的 `invalid_request`；生成和流都要在按「不可重试」放弃之前先换钥。普通 400、上下文超长和 500 不换 Key。已经吐出可见 token 的流不重放。Host 命令 `noteRequestFailure(providerId, status, failedKeyId?)` 与 `claimNextKeyAfterFailure` 都负责分组和 overlay；`failedKeyId` 缺省时处理当前 Key。对 **所有** 适用供应商生效。不要为了 500 去改官方重试环。
+
+`quotaQuery = none` 的 `loadContext`（含只走 `claimNextKeyAfterFailure`、用户还没打开设置页的路径）必须把 `unknown` 本地提升为 `pool`，与 `getView` 同一规则。`channel` 不在 claim 时提升，但当前 Key 离开后仍可选 `unknown`。换钥被跳过（没有 claim 端口、Host 没有改选、协议失败）必须打 warn，不能只在成功时记日志。协议只有确认方法不存在（`METHOD_NOT_FOUND`）才把端口标成不可用；其它失败下次还可以再要。余额不足且 Host 没有给出另一把 Key 时，终态文案说明额度耗尽、没有下一把，`reason` 为 `quota_exhausted`，不得再伪装成普通 `invalid_request`。
+
+### 同一次请求内换 Key
+
+主会话和子代理没有两套 Key。Agent 向 Host 索取下一把号池 Key，Host 仍是唯一所有者：
+
+- `readActiveKey(providerId)`：只读当前 overlay 对应的明文。Key 已离开号池或不支持号池时返回空，Agent 继续用本轮绑定的 Key。
+- `claimNextKeyAfterFailure(providerId, failedKeyId, status)`：按下面的 HTTP 表处理 **`failedKeyId` 这一把**（不是「此刻 overlay 碰巧指向的那把」）。`failedKeyId` 缺省时与 `noteRequestFailure` 一样处理当前 overlay Key。然后按既有 `resolveActiveApiKeyId` 改选。返回的明文必须是另一把仍可用的 Key（`pool`，或当前 Key 离开后的 `unknown`）；没有下一把时 `rotated: false`，不把仍在号池的唯一 Key 写成 `null`。
+
+同一请求接着用新 Key 再发，直到成功，或 Host 不再给出不同的 `keyId`，或下一把已在本次请求失败过，或安全上限 32 次。403 不把 Key 标出号池时，Host 可能改选回刚才失败的那把；这次请求必须停，不能 A/B 交替打到上限。已经吐出可见 token 的流不重放；那次失败仍走 `turn.failed` → `noteRequestFailure`。若错误上下文带有 `pooledApiKeyId`，分类的是这把实际失败的 Key，不是并发改选之后的 overlay。500、取消、网络错误不换 Key。账号型 Coding Plan 不走这条路径。排除后号池仍非空时，overlay 仍不得写成 `null`。
+
+号池里恰好一把 Key 时，下表的归组**不生效**：分组保持 Pool，`rotated: false`，overlay 仍是这把明文。下表只在还有其它 Key 时适用。
 
 | HTTP           | Host 动作                                                                                                                                                                                                             |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 401            | 当前 Key → Invalid（message 匹配 expir → Expired）。改选其他号池 Key。                                                                                                                                                |
 | 429            | 当前 Key → Cooling；无 Retry-After 时 `availableAt = now + 60s`。改选其他号池 Key。                                                                                                                                   |
+| 402            | 余额不足（含 HTTP 400 但正文是 `insufficient_user_quota` / `credit insufficient balance`）。当前 Key → Exhausted，不编造重置时间。改选其他号池 Key。不得标成 Invalid。 |
 | 403            | **不要**凭状态码整钥标成 Invalid。OpenCode 先复检 `/usage`：会员不在 → Expired 并改选；仍有效则 Key 留在号池，有其它号池 Key 才换下一跳。余额渠道先复检 `/balance`：`credits == 0` → Exhausted 并改选；余额仍大于 0 则 Key 留在号池，有其它号池 Key 才换下一跳。其它渠道不复检，Key 留在号池，有其它号池 Key 才换下一跳。排除后号池为空时**保持当前 overlay**。 |
-| 其它（含 500） | 忽略。不轮换、不改分组。                                                                                                                                                                                              |
+| 其它（含 500、普通 400） | 忽略。不轮换、不改分组。                                                                                                                                                                                              |
 
 ```text
 chat / connectivity 401/403/429
@@ -164,7 +184,9 @@ chat / connectivity 401/403/429
        → resolveActiveApiKeyId（号池非空则 overlay 必有明文）
        → savePersonalProviderOverlay
   → 下一次请求读到新 overlay
-同一次 SSE/API 重试仍用当前 overlay
+可见输出前的 401/402/403/429 → claimNextKeyAfterFailure → 同一次请求换下一把号池 Key 再发
+余额不足即使被收成不可重试，也先换钥再决定是否放弃
+已经吐出可见 token 的流不重放
 ```
 
 ## 幂等与失败
@@ -177,8 +199,8 @@ chat / connectivity 401/403/429
 ## 验收
 
 1. 粘贴三行（空行、重复、合法）→ added/duplicate/invalid 计数正确。
-2. Go usage 返回 rolling rate-limited → Cooling + countdown；到期后 Host 复检 ok → 自动回 Pool。
-3. 401 Unauthorized → Invalid；401 expired → Expired。
+2. Go usage 返回 rolling rate-limited，且号池还有其它 Key → Cooling + countdown；到期后 Host 复检 ok → 自动回 Pool。只有这一把 Key 时分组保持 Pool。
+3. 号池还有其它 Key 时，401 Unauthorized → Invalid；401 expired → Expired。只有这一把 Key 时分组保持 Pool。
 4. 批量删除需确认；单删同样确认。
 5. 单条/批量 quota 查询更新 lastChecked / remaining / reset（OpenCode）；非 OpenCode 探测不写假 windows。
 6. 探测抛错后，刚 add 的 Key 仍在池中。
@@ -186,14 +208,14 @@ chat / connectivity 401/403/429
 8. 当前 Key 额度耗尽 / 被 401·429 拒绝且号池还有成员 → overlay 切到剩余额度最高的号池 Key。
 9. 用户在弹窗里点「使用」仅对号池 Key 生效；设置卡只显示当前 Key 摘要，添加/分组在弹窗里。
 10. `noteRequestFailure(403)` 且号池还有其它 Key → overlay 换钥，当前 Key 仍在号池；仅一把号池 Key 时 overlay 不变。
-11. `noteRequestFailure(401)` → 当前 Key Invalid，overlay 切到其它号池 Key；不得在仍有号池 Key 时写成 null。
+11. `noteRequestFailure(401)` 且还有其它号池 Key → 当前 Key Invalid，overlay 切到其它号池 Key；不得在仍有号池 Key 时写成 null。只有这一把时分组保持 Pool。
 12. overlay 已有明文时 `addKeys` 一批更高剩余的号池 Key → `activeKeyId` / overlay 仍是原明文（含尚未探测的 `unknown`）；非 OpenCode 同规则。
 13. 当前 Key 仍在号池时，后到的更高剩余 Key 不得改 overlay。
 14. chat `turn.failed` 带 403/401 且号池还有其它成员 → 下一次请求读到另一把号池 Key，不得中途轮换 SSE。
 15. 官方 usage 三档齐全时，视图 `windows` 含 rolling / weekly / monthly 的 `usedPercent` 与 `resetsAt`；剩余展示为 `100 - usedPercent`。缺一档时该档不出现，另外两档仍在。分组仍由已用最高的一档决定。
 16. `addKeys` 之后 `getView` 对原 overlay 的 Go `/usage` 返回 403 → 该 Key 不进入 Invalid，`activeKeyId` 仍是原 overlay。
 17. `noteRequestFailure(403)` 且当前 Key 仍是 `unknown`、或排除后没有其它号池 Key → overlay 明文不变，不得写成 null。
-18. Go `/usage` 返回 `EntitlementError` → `membership.state = inactive`、`renewsAt = null`、分组 Expired。200 且没有订阅续订字段 → `membership.state = active`、`renewsAt = null`，不得等于 monthly `resetsAt`。响应带 `subscription.renewsAt` / `access.endsAt` 时只写入**该 Key**；两把 Key 若各自返回不同 `endsAt`，不得互相覆盖。先前误写入的控制台日期，在下一次只有用量的探测后必须清成 `null`。RegionError 403 仍不标 Expired。
+18. Go `/usage` 返回 `EntitlementError`，且号池还有其它 Key → `membership.state = inactive`、`renewsAt = null`、分组 Expired。只有这一把 Key 时会员状态仍是 inactive，但分组保持 Pool。200 且没有订阅续订字段 → `membership.state = active`、`renewsAt = null`，不得等于 monthly `resetsAt`。响应带 `subscription.renewsAt` / `access.endsAt` 时只写入**该 Key**；两把 Key 若各自返回不同 `endsAt`，不得互相覆盖。先前误写入的控制台日期，在下一次只有用量的探测后必须清成 `null`。RegionError 403 仍不标 Expired。
 19. 内置非 OpenCode template（如 `openai`）：探测该渠道 models URL，**永不**请求 `opencode.ai/zen/go/v1/usage`；`view.quotaQuery` 为 `channel`；models 200 → Pool 且 `windows` 为空；`noteRequestFailure(429)` 切到其它号池 Key。
 20. 自定义 `templateId` 为 null 且 host 不是余额制 host：`view.quotaQuery` 为 `none`；`addKeys` 不调用 probe；Key 分组为 `pool`。
 21. 自定义 `getView` 将已存 `unknown` Key 本地提升为 `pool`，且不调用 probe。
@@ -201,6 +223,15 @@ chat / connectivity 401/403/429
 23. `baseUrl` 为 `https://api.b.ai/v1`、`https://api.b.ai` 或 `https://api.b.ai/v1/chat/completions`（`templateId` 为空或为 openai 等内置模板）→ `quotaQuery` 为 `balance`，探测只打 `https://api.b.ai/v1/balance`。`personal_balance: 0` 且无 `quota_reset_at` → 分组 `exhausted`，`windows` 为空，视图带 `balance.credits = 0`。`personal_balance > 0` → Pool，`remainingPercent = null`，界面显示剩余 Credits。`success: false` 保留上次分组。`api.b.ai.example.com` 不命中。
 24. 余额渠道当前 Key 探测为 `exhausted`，且号池还有 `credits > 0` 的 Key → overlay 切到仍在号池的 Key。当前 Key 仍在 Pool 时，不得因另一把 Key 余额更高而换。
 25. 余额渠道 `noteRequestFailure(403)` 先复检 `/balance`：余额为 0 → `exhausted` 并改选；余额仍大于 0 → 当前 Key 留在号池，有其它号池 Key 才换下一跳。OpenCode 的 403 仍只复检 `/usage`。
+26. 这条渠道上的请求（含主会话和子代理）在可见输出前收到 401，且号池还有另一把 Key → 同一次请求改用那把 Key 再发并可以成功；`failedKeyId` 被标为 Invalid。仅一把号池 Key 时不重放，分组保持 Pool，overlay 不写成 null。
+27. 429 / 403 同样在可见输出前换下一把号池 Key。500、取消、已发出可见 token 的流不在本次请求里换 Key 重放。子代理没有单独的 Key。
+28. `claimNextKeyAfterFailure` 的 `failedKeyId` 不是当前 overlay 时，只处理那把失败 Key，不把已经改选好的另一把 Key 标成 Invalid。
+29. 当前 Key 因 402 离开，且没有其它 `pool` 成员、但还有 `unknown` → 改选到那把 `unknown`，overlay 不写成 null。已经有 `pool` 成员时，`unknown` 不得抢先。
+30. `quotaQuery = none`：store 里有一把 `unknown`，overlay 明文是另一把尚未入库的 Key。只调用 `claimNextKeyAfterFailure(..., 402)`、不先 `getView` → 失败的 overlay Key 标成 `exhausted`，改选到 store 里那把，且不发探测 HTTP。
+31. `quotaQuery = channel`：两把 Key 都是 `unknown`。`claimNextKeyAfterFailure(402)` 不打 `/models`，失败钥标成 `exhausted`，改选到另一把。
+32. `claimNextKeyAfterFailure` 不传 `failedKeyId` 时分类当前 Key；有下一把则 `rotated: true`。仅一把时 `rotated: false`，分组保持 Pool，overlay 不写成 null。
+33. turn 错误的 attribution 用 `providerErrorCode`（可以没有 `providerCode`）且带 `pooledApiKeyId` → 解析为 402 和那把失败 Key。压缩请求的模型调用上下文带有同一套 claim 端口。余额不足且没有下一把时，抛出的 reason 是 `quota_exhausted`，文案说明没有备用 Key。
+34. 只添加一把 Key：余额为 0、401、429、402 或额度窗口 rate-limited，分组仍是 Pool，`activeKeyId` 仍是这把 Key，overlay 明文不被清空。同一供应商再有第二把 Key 之后，没有额度 / 401 / 429 仍会把失败的那把移出 Pool。删到只剩一把时，剩下的 Key 回到 Pool。
 
 ## 时间与所有者
 

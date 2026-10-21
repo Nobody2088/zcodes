@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef } from "react";
-import { NARROW_SHELL_MEDIA_QUERY } from "@/lib/narrowShellViewport.js";
+import { isNarrowShellViewport } from "@/lib/narrowShellViewport.js";
 
 /** 仅拥有 DOM 布局投影；权限、Plan 和 CUA 业务状态仍由原有 hooks 管理。 */
-function fitComposerToolbar(root: HTMLElement) {
+export function fitComposerToolbar(root: HTMLElement) {
   const available = root.querySelector<HTMLElement>("[data-composer-leading-actions]");
   const content = root.querySelector<HTMLElement>("[data-composer-leading-content]");
   if (!available || !content) return;
@@ -34,6 +34,9 @@ function fitComposerToolbar(root: HTMLElement) {
   if (!fits()) {
     const model = root.querySelector<HTMLElement>(".composer-model-trigger");
     if (!model) return;
+    // 窄屏两行布局（工具条 display:grid）：模型名独占下行，宽度已由 CSS 的 grow + basis-0 取剩余空间，
+    // 这里再按单行公式算会把上行宽度一起算进溢出，把模型名压到 120px 下限；交给 CSS，不上限。
+    if (getComputedStyle(root).display === "grid") return;
     const trailing = root.querySelector<HTMLElement>("[data-composer-trailing-actions]");
     const gap = Number.parseFloat(getComputedStyle(root).columnGap) || 12;
     const overflow = Math.max(
@@ -46,11 +49,9 @@ function fitComposerToolbar(root: HTMLElement) {
         : 0,
     );
     const modelWidth = Math.max(28, model.getBoundingClientRect().width - overflow);
-    // 窄屏（手机远控）必须保留模型名可读，不能退回仅图标；用 max-width + truncate。
-    const preferModelLabel =
-      typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia(NARROW_SHELL_MEDIA_QUERY).matches;
+    // 窄屏与手机远控（与 V4ComposerToolbar 的 preferFullModelLabel 同一谓词）：模型名必须可读，
+    // 不能退回仅图标；两者判定不一致时 gained 的 data-composer-model-icon 会变成死属性。
+    const preferModelLabel = isNarrowShellViewport();
     if (modelWidth < 80 && !preferModelLabel) {
       root.dataset.composerModelIcon = "true";
     } else {

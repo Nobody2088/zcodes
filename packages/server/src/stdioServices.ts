@@ -3,6 +3,7 @@ import {
   startSocks5ProxyChainGateway,
   type ZCodeAgentCommandResolver,
 } from "@zcode/services/node";
+import type { IChannel } from "@zcode/rpc";
 import {
   parseServiceAuthorityMode,
   parseSocks5ProxyChain,
@@ -14,19 +15,20 @@ import {
   ZCODE_REMOTE_RUNTIME_NETWORK_AUTHORITY_ENV_KEY,
 } from "@zcode/shared";
 
-interface CreateStdioServicesOptions {
+export interface CreateStdioServicesOptions {
+  topicResourceRelayChannel?: () => IChannel;
   env?: Record<string, string | undefined>;
   zcodeBuiltinProviderConfigFilePath: string;
   zcodeAgentCommandResolver?: ZCodeAgentCommandResolver;
 }
 
-interface RemoteAgentNetworkOptions {
+export interface RemoteAgentNetworkOptions {
   httpProxy?: string;
   allProxy?: string;
   noProxy?: string;
 }
 
-function resolveRemoteAgentNetworkFromEnv(
+export function resolveRemoteAgentNetworkFromEnv(
   env: Record<string, string | undefined>,
 ): RemoteAgentNetworkOptions | undefined {
   if (env[ZCODE_REMOTE_RUNTIME_NETWORK_AUTHORITY_ENV_KEY]?.trim() !== "1") {
@@ -64,6 +66,7 @@ export async function createStdioServices(options: CreateStdioServicesOptions) {
   // 测试注入 resolver 只用于在 spawn 前观察最终命令，不改变生产默认 resolver。
   const services = createLocalServices({
     zcodeBuiltinProviderConfigFilePath: options.zcodeBuiltinProviderConfigFilePath,
+    topicResourceRelayChannel: options.topicResourceRelayChannel,
     serviceAuthorityMode: authorityModeParseResult.mode,
     zcodeAgentCommandResolver: options.zcodeAgentCommandResolver,
     remoteAgentNetwork,

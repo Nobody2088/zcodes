@@ -22,7 +22,7 @@ const HTTP_PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", ZCODE_HTTP_PROXY_ENV_K
 const ALL_PROXY_ENV_KEYS = ["ALL_PROXY", "all_proxy"] as const;
 const NO_PROXY_ENV_KEYS = ["NO_PROXY", "no_proxy", ZCODE_NO_PROXY_ENV_KEY] as const;
 
-function buildAgentProxyEnv(
+export function buildAgentProxyEnv(
   httpProxy: string | undefined,
   allProxy: string | undefined,
 ): Record<string, string> {
@@ -43,7 +43,7 @@ function buildAgentProxyEnv(
   return env;
 }
 
-function buildAgentCaCertEnv(caCertPath: string | undefined): Record<string, string> {
+export function buildAgentCaCertEnv(caCertPath: string | undefined): Record<string, string> {
   const trimmed = caCertPath?.trim();
   if (!trimmed) {
     return {};
@@ -56,7 +56,7 @@ function buildAgentCaCertEnv(caCertPath: string | undefined): Record<string, str
   };
 }
 
-function buildAgentNoProxyEnv(noProxy: string | undefined): Record<string, string> {
+export function buildAgentNoProxyEnv(noProxy: string | undefined): Record<string, string> {
   // 代理已注入时始终带上有效绕过（空配置 → 默认本地列表），避免回环与本机服务误走代理。
   const normalized = resolveEffectiveNoProxy(noProxy);
   const env: Record<string, string> = {};

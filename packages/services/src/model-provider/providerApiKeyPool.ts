@@ -240,7 +240,23 @@ export interface ActiveApiKeyCandidate {
 
 export const REQUEST_FAILURE_COOLING_MS = 60_000;
 
-export function parsePooledRequestFailureStatus(message: string): 401 | 403 | 429 | null {
+/** 模型回合把「这把 Key 付不起」报成 400 时使用。不是无效 Key。 */
+export const POOLED_KEY_QUOTA_EXHAUSTED_STATUS = 402;
+
+const QUOTA_EXHAUSTED_CODE = /insufficient_user_quota/i;
+const QUOTA_EXHAUSTED_MESSAGE =
+  /credit insufficient balance|insufficient(?:[\s_-]+user)?[\s_-]+quota|insufficient balance/i;
+
+export function isPooledQuotaExhaustedSignal(
+  providerCode: string | undefined,
+  message: string | undefined,
+): boolean {
+  if (providerCode && QUOTA_EXHAUSTED_CODE.test(providerCode.trim())) return true;
+  return Boolean(message && QUOTA_EXHAUSTED_MESSAGE.test(message));
+}
+
+export function parsePooledRequestFailureStatus(message: string): 401 | 403 | 429 | 402 | null {
+  if (isPooledQuotaExhaustedSignal(undefined, message)) return POOLED_KEY_QUOTA_EXHAUSTED_STATUS;
   if (/\b401\b/.test(message)) return 401;
   if (/\b403\b/.test(message)) return 403;
   if (/\b429\b/.test(message)) return 429;
@@ -274,7 +290,14 @@ export function resolveActiveApiKeyId(input: {
     return current.id;
   }
 
-  const candidates = pool.filter((item) => !excluded.has(item.id));
+  const poolCandidates = pool.filter((item) => !excluded.has(item.id));
+  // 当前钥已经离开后，探测失败或还没 getView 的 unknown 仍可能是下一把。
+  // 只看 pool 会让 HTTP 400 余额不足在号池里明明还有 Key 时直接放弃。
+  // 已在号池的成员优先，避免 unknown 的空剩余（按 100 计）盖过真实号池 Key。
+  const unknownCandidates = input.keys.filter(
+    (item) => item.group === "unknown" && !excluded.has(item.id),
+  );
+  const candidates = poolCandidates.length > 0 ? poolCandidates : unknownCandidates;
   // 排除后没有其它号池成员时，unknown / 仍在号池的当前钥必须留下，不能写成 null。
   if (candidates.length === 0 && current && !hasLeftApiKeyPool(current.group)) {
     return current.id;
@@ -298,10 +321,14 @@ function readProviderIdFromFailureText(text: string): string | null {
 
 export function readPooledRequestFailureFromTurnError(error: unknown): {
   readonly providerId: string;
-  readonly status: 401 | 403 | 429;
+  readonly status: 401 | 403 | 429 | 402;
+  readonly failedKeyId?: string;
 } | null {
   const seen = new WeakSet<object>();
-  const visit = (value: unknown, depth: number): { providerId: string; status: 401 | 403 | 429 } | null => {
+  const visit = (
+    value: unknown,
+    depth: number,
+  ): { providerId: string; status: 401 | 403 | 429 | 402; failedKeyId?: string } | null => {
     if (depth > 6 || !value || typeof value !== "object" || seen.has(value)) return null;
     seen.add(value);
     const record = asRecord(value);
@@ -320,7 +347,26 @@ export function readPooledRequestFailureFromTurnError(error: unknown): {
       asPooledFailureStatus(context.statusCode) ??
       parsePooledRequestFailureStatus(message) ??
       parsePooledRequestFailureStatus(detail);
-    if (providerId && status) return { providerId, status };
+    const failedKeyId =
+      readNonEmptyString(context.pooledApiKeyId) ??
+      readNonEmptyString(attribution.pooledApiKeyId) ??
+      readNonEmptyString(record.pooledApiKeyId);
+    // turn 投影把业务码放在 attribution.providerErrorCode，不是 providerCode。
+    // 只读后者时，insufficient_user_quota 的下一跳会漏掉这把实际失败的 Key。
+    const providerCode =
+      readNonEmptyString(attribution.providerErrorCode) ??
+      readNonEmptyString(context.providerErrorCode) ??
+      readNonEmptyString(record.providerErrorCode) ??
+      readNonEmptyString(attribution.providerCode) ??
+      readNonEmptyString(context.providerCode) ??
+      readNonEmptyString(record.providerCode);
+    const quotaStatus = isPooledQuotaExhaustedSignal(providerCode, `${message}\n${detail}`)
+      ? POOLED_KEY_QUOTA_EXHAUSTED_STATUS
+      : null;
+    const resolvedStatus = quotaStatus ?? status;
+    if (providerId && resolvedStatus) {
+      return { providerId, status: resolvedStatus, ...(failedKeyId ? { failedKeyId } : {}) };
+    }
     return visit(record.cause, depth + 1) ?? visit(record.error, depth + 1);
   };
   return visit(error, 0);
@@ -747,6 +793,6 @@ function readNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function asPooledFailureStatus(value: unknown): 401 | 403 | 429 | null {
-  return value === 401 || value === 403 || value === 429 ? value : null;
+function asPooledFailureStatus(value: unknown): 401 | 403 | 429 | 402 | null {
+  return value === 401 || value === 402 || value === 403 || value === 429 ? value : null;
 }

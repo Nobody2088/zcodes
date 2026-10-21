@@ -12,6 +12,7 @@ import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { useOptionalPlatform } from "@/hooks/usePlatform.js";
 import { useOptionalServices } from "@/hooks/useServices.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME } from "@/lib/narrowShellPresentation.js";
 import {
   supportsLocalMacCuaPermissionOnboarding,
   supportsLocalWindowsCuaEntry,
@@ -21,7 +22,7 @@ import {
   type UseCuaComposerEntryParams,
 } from "@/hooks/useCuaComposerEntry.js";
 
-type V4ComposerCuaEntryProps = UseCuaComposerEntryParams;
+export type V4ComposerCuaEntryProps = UseCuaComposerEntryParams;
 
 /**
  * 平台门前置层：平台不支持（或宿主根本没提供 platform / services context）时连内层都不挂载。
@@ -73,6 +74,7 @@ function V4ComposerCuaEntryMounted(props: V4ComposerCuaEntryProps) {
         onClick={view.clickAction === "open-settings" ? onActivate : undefined}
         className={
           "group/cua h-7 w-fit justify-center gap-1 rounded-lg px-1.5 py-1.5 text-ui-base " +
+          `${NARROW_COMPOSER_TOOL_ENTRY_CLASS_NAME} ` +
           (view.interactionDisabled ? "opacity-50" : "")
         }
       >

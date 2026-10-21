@@ -30,6 +30,7 @@ import {
   loadApiKeyPoolStore,
   projectApiKeyPoolView,
   promoteNoneQuotaQueryKeys,
+  retainSoleApiKeyInDefaultGroup,
   resolveCurrentKeyId,
   saveApiKeyPoolStore,
   syncActiveOverlay,
@@ -104,6 +105,11 @@ export function createProviderApiKeyPoolService(
     if (supported) {
       importOverlayKey(store.keys, provider?.effectiveConfig, now());
     }
+    // 自定义渠道的 unknown 提升不能只发生在 getView。claim 若先于打开设置页，
+    // 刚导入的 overlay Key 会停在 unknown，402 之后选不中下一把。
+    if (supported && quotaQuery === "none") {
+      promoteNoneQuotaQueryKeys(store.keys, now());
+    }
     const currentKeyId = supported
       ? resolveCurrentKeyId(store.keys, store.activeKeyId, provider?.effectiveConfig)
       : null;
@@ -128,6 +134,8 @@ export function createProviderApiKeyPoolService(
     requestedKeyId?: string | null,
     excludedKeyIds?: readonly string[],
   ): Promise<ProviderApiKeyPoolView> => {
+    // 落盘前固定唯一 Key 的分组，覆盖探测和请求失败两条写入路径。
+    retainSoleApiKeyInDefaultGroup(keys);
     const activeKeyId = supported
       ? resolveActiveApiKeyId({
           keys: keys.map((item) => ({
@@ -247,6 +255,120 @@ export function createProviderApiKeyPoolService(
     refreshTimer.unref?.();
   }
 
+  /**
+   * 按 HTTP 状态分类一把 Key 并改选 overlay。
+   * explicitKeyId 缺省时就是当前 overlay（noteRequestFailure）。
+   * 子代理传入失败的那把 Key，避免并发改选后误伤已经换上的下一把。
+   * 找不到 explicitKeyId 时不写盘。
+   */
+  const settleRequestFailure = async (
+    providerId: string,
+    explicitKeyId: string | null,
+    status: number,
+  ): Promise<{
+    view: ProviderApiKeyPoolView;
+    keys: StoredApiKey[];
+    targetKeyId: string | null;
+  } | null> => {
+    const { provider, family, quotaQuery, supported, keys, currentKeyId } =
+      await loadContext(providerId);
+    requireSupported(supported);
+    const target = explicitKeyId
+      ? keys.find((item) => item.keyId === explicitKeyId)
+      : currentKeyId
+        ? keys.find((item) => item.keyId === currentKeyId)
+        : undefined;
+    const project = async (
+      targetKeyId: string | null,
+      requestedKeyId?: string | null,
+      excludedKeyIds?: readonly string[],
+    ) => ({
+      view: await persistAndProject(
+        providerId,
+        family,
+        quotaQuery,
+        keys,
+        true,
+        currentKeyId,
+        requestedKeyId,
+        excludedKeyIds,
+      ),
+      keys,
+      targetKeyId,
+    });
+    if (explicitKeyId && !target) return null;
+    if (!target) return project(null);
+    const checkedAt = now();
+    if (status === 402) {
+      // 余额不足不是无效 Key。没有重置时间，进没有额度，并改选下一把。
+      applyClassification(
+        target,
+        {
+          group: "exhausted",
+          remainingPercent: 0,
+          resetAt: null,
+          availableAt: null,
+          probeError: null,
+        },
+        checkedAt,
+      );
+      return project(target.keyId);
+    }
+    if (status === 401) {
+      applyClassification(
+        target,
+        {
+          group: "invalid",
+          remainingPercent: null,
+          resetAt: null,
+          availableAt: null,
+          probeError: "auth",
+        },
+        checkedAt,
+      );
+      return project(target.keyId);
+    }
+    if (status === 429) {
+      const availableAt = checkedAt + REQUEST_FAILURE_COOLING_MS;
+      applyClassification(
+        target,
+        {
+          group: "cooling",
+          remainingPercent: 0,
+          resetAt: availableAt,
+          availableAt,
+          probeError: null,
+        },
+        checkedAt,
+      );
+      return project(target.keyId);
+    }
+    if (status === 403) {
+      // OpenCode 先复检 /usage；余额渠道先复检 /balance。余额为 0 会离开号池并改选。
+      if (provider && (family != null || quotaQuery === "balance")) {
+        await probeRecords(family, quotaQuery, provider, [target]);
+      }
+      if (hasLeftApiKeyPool(target.group)) return project(target.keyId);
+      // 只有目标钥已在号池、且还有别的号池成员时才改下一跳。unknown overlay 或仅剩一把时保持明文。
+      const otherPool = keys.some((item) => item.group === "pool" && item.keyId !== target.keyId);
+      if (target.group === "pool" && otherPool) {
+        return project(target.keyId, null, [target.keyId]);
+      }
+      return project(target.keyId);
+    }
+    return project(target.keyId);
+  };
+
+  const activeKeySecret = (
+    keys: readonly StoredApiKey[],
+    activeKeyId: string | null,
+  ): { apiKey: string; keyId: string } | null => {
+    if (!activeKeyId) return null;
+    const selected = keys.find((item) => item.keyId === activeKeyId);
+    if (!selected?.secret || hasLeftApiKeyPool(selected.group)) return null;
+    return { apiKey: selected.secret, keyId: selected.keyId };
+  };
+
   return {
     onDidChange: toEvent((listener) => {
       listeners.add(listener);
@@ -352,65 +474,53 @@ export function createProviderApiKeyPoolService(
         }
         return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId, keyId);
       }),
-    noteRequestFailure: (providerId, status) =>
+    noteRequestFailure: (providerId, status, failedKeyId) =>
       enqueue(providerId, async () => {
-        const { provider, family, quotaQuery, supported, keys, currentKeyId } =
-          await loadContext(providerId);
-        requireSupported(supported);
-        const current = currentKeyId ? keys.find((item) => item.keyId === currentKeyId) : undefined;
-        if (!current) {
-          return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId);
+        // 失败的是请求实际使用的那把 Key。并发子代理已经把 overlay 改走后，不能再按当前 Key 分类。
+        const settled = await settleRequestFailure(providerId, failedKeyId?.trim() || null, status);
+        if (settled) return settled.view;
+        const current = await loadContext(providerId);
+        return projectApiKeyPoolView(
+          providerId,
+          current.family,
+          current.supported ? current.keys : [],
+          current.supported,
+          revisions.get(providerId) ?? 0,
+          current.supported ? current.currentKeyId : null,
+          current.quotaQuery,
+        );
+      }),
+    readActiveKey: (providerId) =>
+      enqueue(providerId, async () => {
+        const { supported, keys, currentKeyId } = await loadContext(providerId);
+        if (!supported) return null;
+        return activeKeySecret(keys, currentKeyId);
+      }),
+    claimNextKeyAfterFailure: (providerId, failedKeyId, status) =>
+      enqueue(providerId, async () => {
+        if (status !== 401 && status !== 402 && status !== 403 && status !== 429) {
+          return { rotated: false };
         }
-        const checkedAt = now();
-        if (status === 401) {
-          applyClassification(
-            current,
-            {
-              group: "invalid",
-              remainingPercent: null,
-              resetAt: null,
-              availableAt: null,
-              probeError: "auth",
-            },
-            checkedAt,
-          );
-          return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId);
+        // failedKeyId 缺省时与 noteRequestFailure 一样处理当前 overlay。
+        // 请求没带上 keyId 不能因此完全不换。
+        const settled = await settleRequestFailure(providerId, failedKeyId?.trim() || null, status);
+        if (!settled) return { rotated: false };
+        const active = activeKeySecret(settled.keys, settled.view.activeKeyId);
+        if (!active || settled.targetKeyId === null || active.keyId === settled.targetKeyId) {
+          log.info("api key pool kept the failed key", {
+            failedKeyId: settled.targetKeyId,
+            providerId,
+            status,
+          });
+          return { rotated: false };
         }
-        if (status === 429) {
-          const availableAt = checkedAt + REQUEST_FAILURE_COOLING_MS;
-          applyClassification(
-            current,
-            {
-              group: "cooling",
-              remainingPercent: 0,
-              resetAt: availableAt,
-              availableAt,
-              probeError: null,
-            },
-            checkedAt,
-          );
-          return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId);
-        }
-        if (status === 403) {
-          // OpenCode 先复检 /usage；余额渠道先复检 /balance。余额为 0 会离开号池并改选。
-          if (provider && current && (family != null || quotaQuery === "balance")) {
-            await probeRecords(family, quotaQuery, provider, [current]);
-          }
-          if (current && hasLeftApiKeyPool(current.group)) {
-            return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId);
-          }
-          // 只有当前钥已在号池、且还有别的号池成员时才改下一跳。unknown overlay 或仅剩一把时保持明文。
-          const otherPool = keys.some(
-            (item) => item.group === "pool" && item.keyId !== current.keyId,
-          );
-          if (current.group === "pool" && otherPool) {
-            return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId, null, [
-              current.keyId,
-            ]);
-          }
-          return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId);
-        }
-        return persistAndProject(providerId, family, quotaQuery, keys, true, currentKeyId);
+        log.info("api key pool switched to the next key", {
+          activeKeyId: active.keyId,
+          failedKeyId: settled.targetKeyId,
+          providerId,
+          status,
+        });
+        return { rotated: true, apiKey: active.apiKey, keyId: active.keyId };
       }),
     revealKey: (providerId, keyId) =>
       enqueue(providerId, async () => {
